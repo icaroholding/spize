@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+import json
 import httpx
 
 from aex_sdk.errors import SpizeError, SpizeHTTPError
@@ -174,6 +175,47 @@ class SpizeClient:
 
     # ----------------------------- receive ------------------------------
 
+    def send_via_tunnel(
+        self,
+        *,
+        recipient: str,
+        declared_size: int,
+        declared_mime: str,
+        filename: str,
+        tunnel_url: str,
+    ) -> TransferResponse:
+        """M2: announce a transfer without uploading bytes. The sender
+        must serve the blob via `tunnel_url` (a data-plane URL)."""
+        if not self.identity:
+            raise ValueError("client has no identity")
+        nonce = random_nonce()
+        issued_at = int(time.time())
+        intent = transfer_intent_bytes(
+            sender_agent_id=self.identity.agent_id,
+            recipient=recipient,
+            size_bytes=declared_size,
+            declared_mime=declared_mime,
+            filename=filename,
+            nonce=nonce,
+            issued_at=issued_at,
+        )
+        sig = self.identity.sign(intent)
+        payload = {
+            "sender_agent_id": self.identity.agent_id,
+            "recipient": recipient,
+            "declared_mime": declared_mime,
+            "filename": filename,
+            "nonce": nonce,
+            "issued_at": issued_at,
+            "intent_signature_hex": sig.hex(),
+            "blob_hex": "",
+            "tunnel_url": tunnel_url,
+            "declared_size": declared_size,
+        }
+        r = self._client.post(f"{self.base_url}/v1/transfers/", json=payload)
+        self._raise_for_status(r)
+        return TransferResponse.from_json(r.json())
+
     def get_transfer(self, transfer_id: str) -> TransferResponse:
         r = self._http.get(f"/v1/transfers/{transfer_id}")
         self._raise_for_status(r)
@@ -194,6 +236,36 @@ class SpizeClient:
         r = self._http.post(f"/v1/transfers/{transfer_id}/ack", json=body)
         self._raise_for_status(r)
         return r.json()
+
+    def request_ticket(self, transfer_id: str) -> "DataPlaneTicket":
+        """M2: request a signed data-plane ticket to fetch the blob directly
+        from the sender's tunnel, bypassing the control plane for payload.
+        Requires the transfer to be in ``ready_for_pickup`` with a tunnel_url.
+        """
+        receipt = self._build_receipt(transfer_id, "request_ticket")
+        r = self._client.post(
+            f"{self.base_url}/v1/transfers/{transfer_id}/ticket",
+            json=receipt,
+        )
+        self._raise_for_status(r)
+        body = r.json()
+        return DataPlaneTicket(
+            transfer_id=body["transfer_id"],
+            recipient=body["recipient"],
+            data_plane_url=body["data_plane_url"],
+            expires=int(body["expires"]),
+            nonce=body["nonce"],
+            signature=body["signature"],
+        )
+
+    def fetch_from_tunnel(self, ticket: "DataPlaneTicket") -> bytes:
+        """M2: fetch blob bytes from the sender's data plane using a ticket."""
+        r = self._client.get(
+            f"{ticket.data_plane_url}/blob/{ticket.transfer_id}",
+            headers={"X-AEX-Ticket": ticket.as_header()},
+        )
+        self._raise_for_status(r)
+        return r.content
 
     def inbox(self) -> dict[str, Any]:
         """List transfers waiting for this identity (state:
@@ -231,4 +303,30 @@ class SpizeClient:
             status_code=r.status_code,
             code=body.get("code"),
             message=body.get("message") or r.text or "unknown error",
+        )
+
+
+# ---------- M2 additions ----------
+
+@dataclass(frozen=True)
+class DataPlaneTicket:
+    transfer_id: str
+    recipient: str
+    data_plane_url: str
+    expires: int
+    nonce: str
+    signature: str
+
+    def as_header(self) -> str:
+        """JSON-encoded ticket for the `X-AEX-Ticket` header."""
+        return json.dumps(
+            {
+                "transfer_id": self.transfer_id,
+                "recipient": self.recipient,
+                "data_plane_url": self.data_plane_url,
+                "expires": self.expires,
+                "nonce": self.nonce,
+                "signature": self.signature,
+            },
+            separators=(",", ":"),
         )

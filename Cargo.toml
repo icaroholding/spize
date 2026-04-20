@@ -9,6 +9,7 @@ members = [
     "crates/aex-policy",
     "crates/aex-tunnel",
     "crates/aex-billing",
+    "crates/aex-data-plane",
 ]
 
 [workspace.package]

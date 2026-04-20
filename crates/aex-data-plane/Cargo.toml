@@ -1,0 +1,46 @@
+[package]
+name = "aex-data-plane"
+description = "Agent Exchange Protocol (AEX) data plane: sender-side HTTP server that streams blobs behind signed tickets."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage = "https://spize.ai"
+authors = ["Icaro Holding <oss@spize.ai>"]
+keywords = ["aex", "data-plane", "peer-to-peer", "file-transfer"]
+categories = ["network-programming"]
+
+[dependencies]
+aex-core = { path = "../aex-core" }
+aex-scanner = { path = "../aex-scanner" }
+aex-audit = { path = "../aex-audit" }
+
+# HTTP
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true, features = ["trace", "limit", "timeout"] }
+
+# Async
+tokio = { workspace = true }
+async-trait.workspace = true
+futures.workspace = true
+
+# Serde
+serde = { workspace = true }
+serde_json.workspace = true
+
+# Crypto
+ed25519-dalek.workspace = true
+hex.workspace = true
+sha2.workspace = true
+
+# Errors & logging
+thiserror.workspace = true
+tracing.workspace = true
+
+# Time
+time = { workspace = true }
+
+[dev-dependencies]
+rand.workspace = true
+tempfile = "3"

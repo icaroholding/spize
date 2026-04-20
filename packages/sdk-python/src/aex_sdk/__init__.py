@@ -1,6 +1,6 @@
 """Agent Exchange Protocol (AEX) — Python SDK."""
 
-from aex_sdk.client import SpizeClient, TransferResponse
+from aex_sdk.client import SpizeClient, TransferResponse, DataPlaneTicket
 from aex_sdk.errors import SpizeError, SpizeHTTPError
 from aex_sdk.identity import Identity
 

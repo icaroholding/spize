@@ -75,6 +75,7 @@ pub fn router() -> Router<AppState> {
         .route("/:transfer_id", get(get_transfer))
         .route("/:transfer_id/download", post(download_transfer))
         .route("/:transfer_id/ack", post(ack_transfer))
+        .route("/:transfer_id/ticket", post(issue_ticket))
         // Disable the default 2 MB JSON extractor cap; our transport-level
         // RequestBodyLimitLayer in build_app enforces the real ceiling.
         .layer(DefaultBodyLimit::disable())
@@ -93,9 +94,17 @@ pub struct CreateTransferRequest {
     pub nonce: String,
     pub issued_at: i64,
     pub intent_signature_hex: String,
-    /// Hex-encoded payload. Kept simple for M1; Phase D moves this to a
-    /// streaming multipart body via data-plane tunnels.
+    /// Hex-encoded payload (M1 path). Empty if tunnel_url is set.
+    #[serde(default)]
     pub blob_hex: String,
+    /// M2: URL of the sender's data plane (Cloudflare tunnel). When present,
+    /// the control plane does NOT touch payload bytes; it only signs tickets.
+    /// Mutually exclusive with blob_hex.
+    #[serde(default)]
+    pub tunnel_url: Option<String>,
+    /// M2: sender-declared total size in bytes.
+    #[serde(default)]
+    pub declared_size: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -139,6 +148,93 @@ async fn create_transfer(
     if !aex_core::wire::is_within_clock_skew(now, req.issued_at) {
         return Err(ApiError::BadRequest("issued_at outside allowed skew".into()));
     }
+
+    // ---- M2 branch: sender serves bytes via Cloudflare tunnel ----
+    if let Some(tunnel_url) = req.tunnel_url.as_deref() {
+        if !tunnel_url.starts_with("https://") {
+            return Err(ApiError::BadRequest("tunnel_url must be https://".into()));
+        }
+        let declared_size = req.declared_size.ok_or_else(|| {
+            ApiError::BadRequest("declared_size is required when tunnel_url is set".into())
+        })?;
+        if !req.blob_hex.is_empty() {
+            return Err(ApiError::BadRequest(
+                "blob_hex and tunnel_url are mutually exclusive".into(),
+            ));
+        }
+
+        // Verify sender intent signature — same canonical bytes as M1, just
+        // without the blob present.
+        let canonical = transfer_intent_bytes(
+            sender.as_str(),
+            &req.recipient,
+            declared_size,
+            &req.declared_mime,
+            &req.filename,
+            &req.nonce,
+            req.issued_at,
+        )
+        .map_err(|e| ApiError::BadRequest(format!("cannot build intent: {}", e)))?;
+        let sig_bytes = hex::decode(&req.intent_signature_hex)
+            .map_err(|e| ApiError::BadRequest(format!("intent_signature_hex: {}", e)))?;
+        if sig_bytes.len() != SIGNATURE_LEN {
+            return Err(ApiError::BadRequest("signature must be 64 bytes".into()));
+        }
+        let sender_pubkey_bytes = hex::decode(&sender_row.public_key)
+            .map_err(|e| ApiError::Internal(Box::new(crate::error::SimpleError(format!(
+                "pubkey hex: {}", e
+            )))))?;
+        let sender_pubkey_arr: [u8; 32] = sender_pubkey_bytes.as_slice().try_into().map_err(|_| {
+            ApiError::Internal(Box::new(crate::error::SimpleError("pubkey length".to_string())))
+        })?;
+        let sender_pubkey = ed25519_dalek::VerifyingKey::from_bytes(&sender_pubkey_arr)
+            .map_err(|e| ApiError::Internal(Box::new(crate::error::SimpleError(format!(
+                "pubkey parse: {}", e
+            )))))?;
+        let sig_arr: [u8; 64] = sig_bytes.as_slice().try_into().unwrap();
+        let sig = ed25519_dalek::Signature::from_bytes(&sig_arr);
+        use ed25519_dalek::Verifier;
+        sender_pubkey
+            .verify(&canonical, &sig)
+            .map_err(|_| ApiError::Unauthorized("sender intent signature invalid".into()))?;
+
+        // Consume intent nonce (replay protection).
+        tx_db::consume_intent_nonce(&state.db, sender.as_str(), &req.nonce)
+            .await
+            .map_err(|e| match e {
+                sqlx::Error::Database(d) if d.constraint() == Some("transfer_intent_nonces_pkey") => {
+                    ApiError::Conflict("intent nonce already used".into())
+                }
+                other => ApiError::from(other),
+            })?;
+
+        let transfer_id = format!("tx_{}", hex::encode(rand::random::<[u8; 16]>()));
+        let recipient_kind = classify_recipient(&req.recipient);
+
+        let row = tx_db::insert(
+            &state.db,
+            tx_db::InsertTransfer {
+                transfer_id: &transfer_id,
+                sender_agent_id: sender.as_str(),
+                recipient: &req.recipient,
+                recipient_kind: recipient_kind_str(recipient_kind),
+                state: "ready_for_pickup",
+                size_bytes: declared_size as i64,
+                declared_mime: opt_str(&req.declared_mime),
+                filename: opt_str(&req.filename),
+                blob_sha256: None,
+                scanner_verdict: None,
+                policy_decision: None,
+                rejection_code: None,
+                rejection_reason: None,
+                tunnel_url: Some(tunnel_url),
+            },
+        )
+        .await?;
+
+        return Ok((StatusCode::CREATED, Json(row_to_response(row))));
+    }
+    // ---- End M2 branch. Fallback: M1 blob-hex flow. ----
 
     // Decode blob + signature.
     let blob = hex::decode(&req.blob_hex)
@@ -329,6 +425,7 @@ async fn create_transfer(
             policy_decision: serde_json::to_value(&post_decision).ok(),
             rejection_code: None,
             rejection_reason: None,
+            tunnel_url: None,
         },
     )
     .await?;
@@ -364,6 +461,7 @@ async fn persist_rejected(
             policy_decision,
             rejection_code: Some(code),
             rejection_reason: Some(reason),
+            tunnel_url: None,
         },
     )
     .await?;
@@ -608,4 +706,149 @@ fn row_to_response(row: tx_db::TransferRow) -> TransferResponse {
         rejection_reason: row.rejection_reason,
         created_at: row.created_at,
     }
+}
+
+
+// ============================================================================
+// M2: data-plane ticket issuance
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct TicketRequest {
+    pub recipient_agent_id: String,
+    pub nonce: String,
+    pub issued_at: i64,
+    pub receipt_signature_hex: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TicketResponse {
+    pub transfer_id: String,
+    pub recipient: String,
+    pub data_plane_url: String,
+    pub expires: i64,
+    pub nonce: String,
+    pub signature: String,
+}
+
+const TICKET_ACTION: &str = "request_ticket";
+const TICKET_TTL_SECONDS: i64 = 60;
+
+pub async fn issue_ticket(
+    State(state): State<AppState>,
+    Path(transfer_id): Path<String>,
+    Json(req): Json<TicketRequest>,
+) -> Result<Json<TicketResponse>, ApiError> {
+    let signer = state.signer.as_ref().ok_or_else(|| {
+        ApiError::Internal(Box::new(crate::error::SimpleError(
+            "control plane signing key is not configured".to_string(),
+        )))
+    })?;
+
+    let recipient = AgentId::new(&req.recipient_agent_id)?;
+
+    if req.nonce.len() < MIN_NONCE_LEN || req.nonce.len() > MAX_NONCE_LEN {
+        return Err(ApiError::BadRequest("nonce length out of range".into()));
+    }
+    if !req.nonce.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ApiError::BadRequest("nonce must be hex".into()));
+    }
+
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    if !aex_core::wire::is_within_clock_skew(now, req.issued_at) {
+        return Err(ApiError::BadRequest("issued_at outside allowed skew".into()));
+    }
+
+    let row = tx_db::find_by_transfer_id(&state.db, &transfer_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("unknown transfer: {}", transfer_id)))?;
+    if row.recipient != *recipient.as_str() {
+        return Err(ApiError::Unauthorized("recipient does not match transfer".into()));
+    }
+    if row.state != "ready_for_pickup" {
+        return Err(ApiError::BadRequest(format!(
+            "transfer is in state '{}', not ready_for_pickup",
+            row.state
+        )));
+    }
+    let tunnel_url = row
+        .tunnel_url
+        .clone()
+        .ok_or_else(|| ApiError::BadRequest("transfer has no data-plane tunnel URL".into()))?;
+
+    let receipt_canonical = aex_core::wire::transfer_receipt_bytes(
+        recipient.as_str(),
+        &transfer_id,
+        TICKET_ACTION,
+        &req.nonce,
+        req.issued_at,
+    )
+    .map_err(|e| ApiError::BadRequest(format!("canonicalisation: {}", e)))?;
+
+    let sig_bytes = hex::decode(&req.receipt_signature_hex)
+        .map_err(|e| ApiError::BadRequest(format!("receipt_signature_hex: {}", e)))?;
+    if sig_bytes.len() != SIGNATURE_LEN {
+        return Err(ApiError::BadRequest("signature must be 64 bytes".into()));
+    }
+
+    let rec_row = agents_db::find_by_agent_id(&state.db, recipient.as_str())
+        .await?
+        .ok_or_else(|| ApiError::Unauthorized("recipient not registered".into()))?;
+
+    let pubkey_bytes = hex::decode(&rec_row.public_key).map_err(|e| {
+        ApiError::Internal(Box::new(crate::error::SimpleError(format!(
+            "pubkey hex: {}", e
+        ))))
+    })?;
+    let pubkey_arr: [u8; 32] = pubkey_bytes.as_slice().try_into().map_err(|_| {
+        ApiError::Internal(Box::new(crate::error::SimpleError("pubkey length".to_string())))
+    })?;
+    let pubkey = ed25519_dalek::VerifyingKey::from_bytes(&pubkey_arr).map_err(|e| {
+        ApiError::Internal(Box::new(crate::error::SimpleError(format!(
+            "pubkey parse: {}", e
+        ))))
+    })?;
+    let sig_arr: [u8; 64] = sig_bytes.as_slice().try_into().unwrap();
+    let sig = ed25519_dalek::Signature::from_bytes(&sig_arr);
+
+    use ed25519_dalek::Verifier;
+    pubkey
+        .verify(&receipt_canonical, &sig)
+        .map_err(|_| ApiError::Unauthorized("recipient signature does not verify".into()))?;
+
+    let expires = now + TICKET_TTL_SECONDS;
+    let ticket_nonce = hex::encode(rand::random::<[u8; 16]>());
+    let canon = aex_core::wire::data_ticket_bytes(
+        &transfer_id,
+        recipient.as_str(),
+        &tunnel_url,
+        expires,
+        &ticket_nonce,
+    )
+    .map_err(|e| {
+        ApiError::Internal(Box::new(crate::error::SimpleError(format!(
+            "canonicalisation: {}", e
+        ))))
+    })?;
+
+    let ticket_sig = signer.sign(&canon);
+
+    sqlx::query(
+        "INSERT INTO data_plane_ticket_nonces (nonce, transfer_id, expires_at)          VALUES ($1, $2, to_timestamp($3))",
+    )
+    .bind(&ticket_nonce)
+    .bind(&transfer_id)
+    .bind(expires as f64)
+    .execute(&state.db)
+    .await
+    .map_err(ApiError::from)?;
+
+    Ok(Json(TicketResponse {
+        transfer_id,
+        recipient: recipient.to_string(),
+        data_plane_url: tunnel_url,
+        expires,
+        nonce: ticket_nonce,
+        signature: hex::encode(&ticket_sig),
+    }))
 }

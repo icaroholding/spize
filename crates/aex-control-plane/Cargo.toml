@@ -4,7 +4,6 @@ description = "Agent Exchange Protocol (AEX) control plane: identity registry, r
 version.workspace = true
 edition.workspace = true
 license = "BUSL-1.1"
-license-file = "LICENSE.bsl"
 repository.workspace = true
 homepage = "https://spize.ai"
 authors = ["Icaro Holding <oss@spize.ai>"]
