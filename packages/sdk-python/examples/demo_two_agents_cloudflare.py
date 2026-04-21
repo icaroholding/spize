@@ -211,6 +211,79 @@ def start_data_plane(cp_pubkey: str, admin_token: str) -> tuple[subprocess.Popen
     return proc, url
 
 
+def _hostname_of(url: str) -> str:
+    from urllib.parse import urlparse
+
+    host = urlparse(url).hostname
+    if not host:
+        raise RuntimeError(f"cannot parse hostname from {url!r}")
+    return host
+
+
+def resolve_via_cloudflare(hostname: str, timeout: float = 30.0) -> str:
+    """Resolve `hostname` to an IPv4 using `dig @1.1.1.1` directly.
+
+    Bypasses the system resolver (macOS + wifi search domain, ISP DNS
+    which may lag behind Cloudflare's authoritative NS for fresh
+    *.trycloudflare.com records, etc). Retries for up to `timeout`s
+    because a freshly-issued quick-tunnel record can take a few seconds
+    to appear even in Cloudflare's own public DNS.
+    """
+    import shutil
+
+    if shutil.which("dig") is None:
+        raise RuntimeError("dig not found on PATH")
+
+    deadline = time.time() + timeout
+    last_err = "no attempts"
+    while time.time() < deadline:
+        proc = subprocess.run(
+            ["dig", "+short", "+time=2", "+tries=1", "@1.1.1.1", hostname, "A"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        ips = [
+            line.strip()
+            for line in proc.stdout.splitlines()
+            if line.strip() and not line.strip().endswith(".")
+        ]
+        if ips:
+            return ips[0]
+        last_err = f"dig stdout={proc.stdout!r} stderr={proc.stderr!r}"
+        time.sleep(2.0)
+    raise RuntimeError(
+        f"could not resolve {hostname} via 1.1.1.1 within {timeout}s "
+        f"(last: {last_err})"
+    )
+
+
+def _curl_with_resolve(hostname: str, ip: str, args: list[str]) -> subprocess.CompletedProcess:
+    """Run curl with --resolve so DNS is bypassed entirely and curl
+    talks directly to `ip` while keeping TLS SNI + HTTP Host set to
+    `hostname`.
+    """
+    import shutil
+
+    if shutil.which("curl") is None:
+        raise RuntimeError("curl not found on PATH")
+    return subprocess.run(
+        [
+            "curl",
+            "--silent",
+            "--show-error",
+            "--fail-with-body",
+            "--resolve",
+            f"{hostname}:443:{ip}",
+            "--max-time",
+            "30",
+        ]
+        + args,
+        capture_output=True,
+        timeout=45,
+    )
+
+
 def upload_to_data_plane(
     *,
     data_plane_url: str,
@@ -222,24 +295,19 @@ def upload_to_data_plane(
 ) -> None:
     """POST the blob to the data plane's admin endpoint.
 
-    Delegates to `curl` instead of Python's httpx because Python's
-    default resolver (via macOS getaddrinfo) applies the local network's
-    search domain (e.g. `.nexxt` on a wifi called "nexxt"), which
-    corrupts lookups of public *.trycloudflare.com hostnames into
-    `<host>.nexxt` NXDOMAIN. curl uses a DNS path that doesn't hit this
-    on macOS, so the call just works. On CI / Linux boxes without a
-    wifi search domain, Python's resolver would also work — using curl
-    uniformly keeps the demo reproducible.
+    DNS resolution is done out-of-band via `dig @1.1.1.1` and then fed
+    to curl through `--resolve hostname:443:ip`. This means the HTTP
+    call is completely independent of whichever DNS resolver Python or
+    the OS would pick — which matters on macOS + wifi networks that
+    ship a search-domain suffix, and during the first ~minute of a
+    fresh Cloudflare quick-tunnel before it has fully propagated into
+    ISP resolvers.
     """
-    import shutil
     import tempfile
     import urllib.parse
 
-    if shutil.which("curl") is None:
-        raise RuntimeError(
-            "curl not found on PATH; the demo needs it as a DNS-robust "
-            "fallback for uploading blobs to the data plane."
-        )
+    hostname = _hostname_of(data_plane_url)
+    ip = resolve_via_cloudflare(hostname)
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".blob") as f:
         f.write(payload)
@@ -249,12 +317,10 @@ def upload_to_data_plane(
     url = f"{data_plane_url}/admin/blob/{transfer_id}?{qs}"
 
     try:
-        proc = subprocess.run(
+        proc = _curl_with_resolve(
+            hostname,
+            ip,
             [
-                "curl",
-                "--silent",
-                "--show-error",
-                "--fail-with-body",
                 "-X",
                 "POST",
                 url,
@@ -264,14 +330,11 @@ def upload_to_data_plane(
                 "content-type: application/octet-stream",
                 "--data-binary",
                 f"@{blob_path}",
-                "--max-time",
-                "30",
+                "-o",
+                "/dev/null",
                 "-w",
                 "HTTP_CODE=%{http_code}",
             ],
-            capture_output=True,
-            text=True,
-            timeout=45,
         )
     finally:
         try:
@@ -279,47 +342,44 @@ def upload_to_data_plane(
         except OSError:
             pass
 
-    if proc.returncode != 0 or "HTTP_CODE=201" not in proc.stdout:
+    stdout_text = proc.stdout.decode("utf-8", errors="replace") if isinstance(proc.stdout, bytes) else proc.stdout
+    stderr_text = proc.stderr.decode("utf-8", errors="replace") if isinstance(proc.stderr, bytes) else proc.stderr
+    if proc.returncode != 0 or "HTTP_CODE=201" not in stdout_text:
         raise RuntimeError(
             f"admin upload failed (exit={proc.returncode}): "
-            f"stdout={proc.stdout[-500:]!r} stderr={proc.stderr[-500:]!r}"
+            f"stdout={stdout_text[-500:]!r} stderr={stderr_text[-500:]!r}"
         )
 
 
 def fetch_from_tunnel_via_curl(ticket) -> bytes:
-    """Same rationale as upload_to_data_plane: uses curl so the DNS
-    lookup of *.trycloudflare.com doesn't hit macOS's search-domain
-    NXDOMAIN fallback."""
-    import shutil
-
-    if shutil.which("curl") is None:
-        raise RuntimeError("curl not found on PATH")
+    """Same DNS-bypass trick as upload_to_data_plane."""
+    hostname = _hostname_of(ticket.data_plane_url)
+    ip = resolve_via_cloudflare(hostname)
 
     url = f"{ticket.data_plane_url}/blob/{ticket.transfer_id}"
-    proc = subprocess.run(
+    proc = _curl_with_resolve(
+        hostname,
+        ip,
         [
-            "curl",
-            "--silent",
-            "--show-error",
-            "--fail-with-body",
             "-X",
             "GET",
             url,
             "-H",
             f"x-aex-ticket: {ticket.as_header()}",
-            "--max-time",
-            "30",
             "-o",
             "-",
         ],
-        capture_output=True,
-        timeout=45,
     )
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"tunnel fetch failed (exit={proc.returncode}): {proc.stderr[-500:]!r}"
+        stderr_text = (
+            proc.stderr.decode("utf-8", errors="replace")
+            if isinstance(proc.stderr, bytes)
+            else proc.stderr
         )
-    return proc.stdout
+        raise RuntimeError(
+            f"tunnel fetch failed (exit={proc.returncode}): {stderr_text[-500:]!r}"
+        )
+    return proc.stdout if isinstance(proc.stdout, bytes) else proc.stdout.encode()
 
 
 if __name__ == "__main__":
