@@ -126,6 +126,20 @@ const DEFAULT_READINESS_TIMEOUT_SECS: u64 = 60;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // CLI pre-pass: --help, --version, --version --verbose short-circuit
+    // before any env / tracing setup so they work in any environment.
+    match parse_cli(std::env::args().skip(1)) {
+        CliAction::PrintHelp => {
+            print_help();
+            return Ok(());
+        }
+        CliAction::PrintVersion { verbose } => {
+            print_version(verbose);
+            return Ok(());
+        }
+        CliAction::Run => {}
+    }
+
     init_tracing();
 
     let opts = Opts::from_env()?;
@@ -133,6 +147,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_READINESS_TIMEOUT_SECS);
+
+    // Kick off the captive-portal probe in parallel with tunnel startup.
+    // It emits `AEX_NETWORK_STATE=<state>` on stdout when the consensus
+    // of Apple/Google/MS NCSI probes completes (protocol-v1 §5.3). The
+    // probe never fails; worst case it emits `unknown`. Advisory only —
+    // orchestrators use it to surface captive-portal conditions to end
+    // users but never gate execution on it.
+    tokio::spawn(async {
+        emit_network_state().await;
+    });
 
     let listener = TcpListener::bind(&opts.bind_addr).await?;
     let local_addr = listener.local_addr()?;
@@ -396,6 +420,88 @@ fn init_tracing() {
         .with(filter)
         .with(tracing_subscriber::fmt::layer().with_target(true))
         .init();
+}
+
+/// Action dispatched from the first-pass CLI parse.
+enum CliAction {
+    Run,
+    PrintVersion { verbose: bool },
+    PrintHelp,
+}
+
+/// Parse the minimal flag set this binary accepts. Anything else is
+/// ignored so env-driven invocations remain compatible.
+fn parse_cli(args: impl Iterator<Item = String>) -> CliAction {
+    let args: Vec<String> = args.collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        return CliAction::PrintHelp;
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
+        return CliAction::PrintVersion { verbose };
+    }
+    CliAction::Run
+}
+
+fn print_help() {
+    println!(
+        "aex-data-plane {} — sender-side data plane for the AEX protocol.\n\
+         \n\
+         USAGE:\n    \
+             aex-data-plane [FLAGS]\n\
+         \n\
+         FLAGS:\n    \
+             -h, --help       Print this help and exit.\n    \
+             -V, --version    Print version and exit.\n    \
+             -v, --verbose    With --version: also print compiled-in transports and DNS config.\n\
+         \n\
+         With no flags, the binary is controlled by environment variables — see\n\
+         the docstring at the top of src/main.rs (`cargo doc -p aex-data-plane`)\n\
+         for the full list. Common ones:\n\
+         \n    \
+             AEX_CONTROL_PLANE_PUBLIC_KEY_HEX  (required) 64-hex control-plane signing key\n    \
+             AEX_TUNNEL_PROVIDER                cloudflare | none     (default: cloudflare)\n    \
+             AEX_BLOB_PATH                      pre-load a blob from disk\n    \
+             AEX_ADMIN_TOKEN                    enable POST /admin/blob/:id for orchestrators\n",
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
+fn print_version(verbose: bool) {
+    println!("aex-data-plane {}", env!("CARGO_PKG_VERSION"));
+    if !verbose {
+        return;
+    }
+    println!();
+    println!("Compiled-in tunnel providers:");
+    println!("  cloudflare  Cloudflare Quick Tunnels, orchestrated via `cloudflared`.");
+    println!("  none        No tunnel; AEX_PUBLIC_URL must be supplied.");
+    println!();
+    println!("DNS:");
+    println!("  Readiness probe resolver  hickory-resolver via Cloudflare 1.1.1.1 / 1.0.0.1");
+    println!("                            (cache_size=0, ndots=1; bypasses OS resolv.conf)");
+    println!("  Network-state probes      DoH via aex-net (protocol-v1 §5.3)");
+    println!();
+    println!("Repository: {}", env!("CARGO_PKG_REPOSITORY"));
+}
+
+/// Run the captive-portal probe consensus once and emit
+/// `AEX_NETWORK_STATE=<state>` on stdout per protocol-v1 §5.3.
+async fn emit_network_state() {
+    let client = match aex_net::build_http_client_with_timeout(
+        "data-plane-captive",
+        std::time::Duration::from_secs(6),
+    ) {
+        Ok(c) => c,
+        Err(err) => {
+            tracing::warn!(error = %err, "captive probe http client init failed");
+            println!("AEX_NETWORK_STATE=unknown");
+            return;
+        }
+    };
+    let state = aex_net::detect_network_state(&client).await;
+    println!("AEX_NETWORK_STATE={}", state.as_stdout_value());
+    tracing::info!(state = state.as_stdout_value(), "captive-portal probe done");
 }
 
 async fn shutdown_signal() {

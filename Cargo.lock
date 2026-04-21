@@ -80,6 +80,7 @@ version = "1.2.0-alpha.3"
 dependencies = [
  "aex-audit",
  "aex-core",
+ "aex-net",
  "aex-scanner",
  "aex-tunnel",
  "async-trait",

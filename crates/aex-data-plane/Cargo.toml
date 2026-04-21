@@ -19,6 +19,7 @@ aex-core = { path = "../aex-core", version = "=1.2.0-alpha.3" }
 aex-scanner = { path = "../aex-scanner", version = "=1.2.0-alpha.3" }
 aex-audit = { path = "../aex-audit", version = "=1.2.0-alpha.3" }
 aex-tunnel = { path = "../aex-tunnel", version = "=1.2.0-alpha.3" }
+aex-net = { path = "../aex-net", version = "=1.2.0-alpha.3" }
 
 # HTTP
 axum = { workspace = true }
