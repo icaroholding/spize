@@ -17,7 +17,7 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          for crate in aex-core aex-identity aex-audit aex-scanner aex-policy aex-tunnel aex-billing aex-control-plane; do
+          for crate in aex-core aex-identity aex-audit aex-scanner aex-policy aex-tunnel aex-billing aex-data-plane aex-control-plane; do
             echo "::group::Publish $crate"
             (cd crates/$crate && cargo publish --token "$CARGO_REGISTRY_TOKEN" --allow-dirty || true)
             # Dependencies need to settle in crates.io index before the next one.

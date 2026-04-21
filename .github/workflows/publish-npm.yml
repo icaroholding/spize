@@ -14,19 +14,17 @@ jobs:
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
+      - name: Install workspaces
+        run: npm install
+      - name: Build all packages
+        run: npm run build
       - name: Publish @aexproto/sdk
-        working-directory: packages/sdk-typescript
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          npm install
-          npm run build
-          npm publish --access public
+        run: npm publish --workspace=packages/sdk-typescript --access public
+      - name: Wait for npm index
+        run: sleep 30
       - name: Publish @aexproto/mcp-server
-        working-directory: packages/mcp-server
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          npm install
-          npm run build
-          npm publish --access public
+        run: npm publish --workspace=packages/mcp-server --access public
