@@ -221,39 +221,66 @@ def _hostname_of(url: str) -> str:
 
 
 def resolve_via_cloudflare(hostname: str, timeout: float = 30.0) -> str:
-    """Resolve `hostname` to an IPv4 using `dig @1.1.1.1` directly.
+    """Resolve `hostname` to an IPv4 by talking to Cloudflare's DNS
+    over HTTPS (https://1.1.1.1/dns-query).
 
-    Bypasses the system resolver (macOS + wifi search domain, ISP DNS
-    which may lag behind Cloudflare's authoritative NS for fresh
-    *.trycloudflare.com records, etc). Retries for up to `timeout`s
-    because a freshly-issued quick-tunnel record can take a few seconds
-    to appear even in Cloudflare's own public DNS.
+    Why DoH and not `dig @1.1.1.1`: plain DNS over UDP/53 is frequently
+    blocked or transparently rewritten on corporate / captive / consumer
+    wifi (seen live on this laptop — dig returned an empty body with
+    no stderr, i.e. the resolver was intercepting). DoH runs on TCP/443
+    and is indistinguishable from regular HTTPS, so it rides through.
+
+    We curl to 1.1.1.1 directly with `--resolve` so there's zero DNS
+    dependency in the resolution of the resolver itself. Retries for
+    up to `timeout`s because a fresh *.trycloudflare.com record can
+    take a second or two to land in Cloudflare's own public DNS.
     """
+    import json
     import shutil
 
-    if shutil.which("dig") is None:
-        raise RuntimeError("dig not found on PATH")
+    if shutil.which("curl") is None:
+        raise RuntimeError("curl not found on PATH")
 
     deadline = time.time() + timeout
     last_err = "no attempts"
     while time.time() < deadline:
         proc = subprocess.run(
-            ["dig", "+short", "+time=2", "+tries=1", "@1.1.1.1", hostname, "A"],
+            [
+                "curl",
+                "--silent",
+                "--show-error",
+                "--max-time",
+                "5",
+                # Talk to 1.1.1.1 directly by IP, no DNS needed for the
+                # resolver endpoint itself.
+                "--resolve",
+                "cloudflare-dns.com:443:1.1.1.1",
+                "-H",
+                "accept: application/dns-json",
+                f"https://cloudflare-dns.com/dns-query?name={hostname}&type=A",
+            ],
             capture_output=True,
             text=True,
             timeout=10,
         )
-        ips = [
-            line.strip()
-            for line in proc.stdout.splitlines()
-            if line.strip() and not line.strip().endswith(".")
-        ]
-        if ips:
-            return ips[0]
-        last_err = f"dig stdout={proc.stdout!r} stderr={proc.stderr!r}"
+        if proc.returncode == 0 and proc.stdout.strip():
+            try:
+                data = json.loads(proc.stdout)
+                for ans in data.get("Answer", []):
+                    # RR type 1 == A.
+                    if ans.get("type") == 1 and isinstance(ans.get("data"), str):
+                        return ans["data"]
+                last_err = f"DoH answered but no A record: {data}"
+            except json.JSONDecodeError as e:
+                last_err = f"DoH response not JSON: {e}; body={proc.stdout[:200]!r}"
+        else:
+            last_err = (
+                f"DoH curl failed exit={proc.returncode} "
+                f"stdout={proc.stdout[:200]!r} stderr={proc.stderr[:200]!r}"
+            )
         time.sleep(2.0)
     raise RuntimeError(
-        f"could not resolve {hostname} via 1.1.1.1 within {timeout}s "
+        f"could not resolve {hostname} via DoH @ 1.1.1.1 within {timeout}s "
         f"(last: {last_err})"
     )
 
