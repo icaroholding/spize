@@ -39,10 +39,12 @@ import atexit
 import os
 import secrets
 import signal
+import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
@@ -61,8 +63,8 @@ def main() -> int:
     admin_token = secrets.token_urlsafe(32)
     data_plane, data_plane_url = start_data_plane(cp_pubkey, admin_token)
     print(f"[1/8] data plane subprocess up, URL = {data_plane_url}")
-    wait_for_reachable(data_plane_url, timeout=30.0)
-    print(f"[1/8] tunnel DNS resolved, data plane reachable over the internet")
+    wait_for_reachable(data_plane_url, dns_timeout=120.0, http_timeout=30.0)
+    print(f"[1/8] tunnel fully reachable from the public internet")
 
     alice_id = Identity.generate(org="demo", name=f"alice{int(time.time())}")
     bob_id = Identity.generate(org="demo", name=f"bob{int(time.time())}")
@@ -196,28 +198,62 @@ def start_data_plane(cp_pubkey: str, admin_token: str) -> tuple[subprocess.Popen
     return proc, url
 
 
-def wait_for_reachable(url: str, timeout: float) -> None:
-    """Poll GET {url}/healthz until it returns 200 or we give up.
+def wait_for_reachable(
+    url: str,
+    dns_timeout: float = 120.0,
+    http_timeout: float = 30.0,
+) -> None:
+    """Wait for a Cloudflare quick tunnel to be reachable end-to-end.
 
-    Cloudflare quick tunnels emit the public URL as soon as the edge
-    connection is established, but the DNS record for
-    *.trycloudflare.com typically needs another 5-10 seconds to
-    propagate. Without this wait, the first httpx.post against the URL
-    fails with "nodename nor servname provided, or not known".
+    Done in two phases so failures point at the right cause:
+    1. DNS phase — `socket.getaddrinfo` for the hostname until it
+       resolves. `*.trycloudflare.com` records typically appear in
+       public DNS 5-30 seconds AFTER cloudflared emits the URL on
+       stderr, and macOS caches negative lookups (NXDOMAIN) for
+       several seconds, so we poll the raw resolver rather than relying
+       on httpx's connection pool which may cache its own failures.
+    2. HTTP phase — once DNS answers, poll `GET /healthz` with a fresh
+       httpx client each attempt. A healthy response means the tunnel,
+       the Cloudflare edge, and our axum server are all up.
     """
-    deadline = time.time() + timeout
-    last_err: Exception | None = None
-    while time.time() < deadline:
+    hostname = urlparse(url).hostname
+    if hostname is None:
+        raise RuntimeError(f"cannot parse hostname from {url!r}")
+
+    dns_deadline = time.time() + dns_timeout
+    last_dns_err: Exception | None = None
+    while time.time() < dns_deadline:
         try:
-            r = httpx.get(f"{url}/healthz", timeout=3.0)
-            if r.status_code == 200:
-                return
+            socket.getaddrinfo(hostname, 443)
+            break
+        except socket.gaierror as e:
+            last_dns_err = e
+            time.sleep(2.0)
+    else:
+        raise RuntimeError(
+            f"DNS never resolved {hostname} within {dns_timeout}s "
+            f"(last error: {last_dns_err!r}). "
+            "cloudflared may have emitted a URL that never reached "
+            "Cloudflare's authoritative DNS."
+        )
+
+    http_deadline = time.time() + http_timeout
+    last_http_err: Exception | None = None
+    while time.time() < http_deadline:
+        try:
+            with httpx.Client(timeout=5.0) as c:
+                r = c.get(f"{url}/healthz")
+                if r.status_code == 200:
+                    return
+                last_http_err = RuntimeError(
+                    f"/healthz returned {r.status_code}: {r.text[:200]!r}"
+                )
         except Exception as e:
-            last_err = e
+            last_http_err = e
         time.sleep(1.0)
     raise RuntimeError(
-        f"data plane at {url} not reachable within {timeout}s; "
-        f"last error: {last_err!r}"
+        f"DNS resolved but {url}/healthz not 200 within {http_timeout}s "
+        f"(last error: {last_http_err!r})"
     )
 
 
