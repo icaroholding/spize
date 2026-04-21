@@ -12,6 +12,7 @@ import httpx
 
 from aex_sdk.errors import SpizeError, SpizeHTTPError
 from aex_sdk.identity import Identity, random_nonce
+from aex_sdk.resolver import CloudflareDoHResolver, build_http_client
 from aex_sdk.wire import (
     registration_challenge_bytes,
     transfer_intent_bytes,
@@ -72,10 +73,18 @@ class SpizeClient:
         identity: Identity,
         *,
         timeout: float = 30.0,
+        resolver: Optional[CloudflareDoHResolver] = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.identity = identity
         self._http = httpx.Client(base_url=self.base_url, timeout=timeout)
+        # The control-plane client (self._http) talks to base_url which in
+        # practice is localhost or a well-known api.spize.io host — DoH is
+        # overkill there. The resolver is kept around so operations that
+        # reach out to a third-party data-plane tunnel (fetch_from_tunnel,
+        # upload_blob_admin) can route through DoH and bypass any local
+        # search-domain or NXDOMAIN cache nonsense.
+        self._resolver = resolver or CloudflareDoHResolver()
 
     def close(self) -> None:
         self._http.close()
@@ -259,14 +268,57 @@ class SpizeClient:
         )
 
     def fetch_from_tunnel(self, ticket: "DataPlaneTicket") -> bytes:
-        """M2: fetch blob bytes from the sender's data plane using a ticket."""
-        r = httpx.get(
-            f"{ticket.data_plane_url}/blob/{ticket.transfer_id}",
-            headers={"X-AEX-Ticket": ticket.as_header()},
-            timeout=30.0,
-        )
-        self._raise_for_status(r)
-        return r.content
+        """M2: fetch blob bytes from the sender's data plane using a ticket.
+
+        Routes DNS through Cloudflare DoH so a freshly-created
+        ``*.trycloudflare.com`` hostname resolves correctly even on a wifi
+        network with a search-domain suffix (the exact failure mode Sprint 1
+        hit repeatedly).
+        """
+        with build_http_client(resolver=self._resolver, timeout=30.0) as client:
+            r = client.get(
+                f"{ticket.data_plane_url}/blob/{ticket.transfer_id}",
+                headers={"X-AEX-Ticket": ticket.as_header()},
+            )
+            self._raise_for_status(r)
+            return r.content
+
+    def upload_blob_admin(
+        self,
+        *,
+        data_plane_url: str,
+        transfer_id: str,
+        admin_token: str,
+        payload: bytes,
+        mime: str = "application/octet-stream",
+        filename: str = "blob",
+    ) -> None:
+        """Upload ``payload`` to a data plane's admin endpoint.
+
+        This wraps the ``POST /admin/blob/:transfer_id`` route that
+        ``aex-data-plane`` exposes when an admin token is set. Used by
+        orchestrated M2 scenarios (the canonical demo, the desktop app)
+        where the sender's data plane is launched with an ephemeral token
+        and accepts blobs for pre-declared transfer IDs.
+
+        Routes DNS through the DoH resolver for the same reason as
+        :meth:`fetch_from_tunnel`.
+        """
+        url = f"{data_plane_url.rstrip('/')}/admin/blob/{transfer_id}"
+        with build_http_client(resolver=self._resolver, timeout=60.0) as client:
+            r = client.post(
+                url,
+                content=payload,
+                params={"mime": mime, "filename": filename},
+                headers={
+                    "x-aex-admin-token": admin_token,
+                    "content-type": "application/octet-stream",
+                },
+            )
+            if r.status_code != 201:
+                raise SpizeError(
+                    f"admin upload rejected: status={r.status_code} body={r.text[:300]!r}"
+                )
 
     def inbox(self) -> dict[str, Any]:
         """List transfers waiting for this identity (state:

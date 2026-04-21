@@ -1,5 +1,6 @@
 import { hex, Identity, randomNonce } from "./identity.js";
 import { SpizeError, SpizeHttpError } from "./errors.js";
+import { CloudflareDoHResolver, buildDohFetch } from "./resolver.js";
 import {
   registrationChallengeBytes,
   ReceiptAction,
@@ -10,7 +11,18 @@ import {
 export interface SpizeClientOptions {
   baseUrl: string;
   identity: Identity;
+  /**
+   * Custom fetch implementation. When provided, this overrides every
+   * HTTP call and the resolver is ignored (useful for tests with
+   * MockTransport-like shims).
+   */
   fetch?: typeof globalThis.fetch;
+  /**
+   * DoH resolver used to build the fetch for tunnel-facing calls
+   * ({@link SpizeClient.fetchFromTunnel}, {@link SpizeClient.uploadBlobAdmin}).
+   * Node.js only; ignored in browsers.
+   */
+  resolver?: CloudflareDoHResolver;
   timeoutMs?: number;
 }
 
@@ -136,12 +148,22 @@ export class SpizeClient {
   readonly baseUrl: string;
   readonly identity: Identity;
   private readonly _fetch: typeof globalThis.fetch;
+  private readonly _tunnelFetch: typeof globalThis.fetch;
   private readonly timeoutMs: number;
 
   constructor(opts: SpizeClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
     this.identity = opts.identity;
     this._fetch = opts.fetch ?? globalThis.fetch.bind(globalThis);
+    // Tunnel-facing calls go through DoH by default so a freshly-created
+    // *.trycloudflare.com hostname resolves even on wifi with a search-
+    // domain suffix. A caller-supplied `fetch` opts out of DoH entirely
+    // (intended for tests + browser builds where DoH is irrelevant).
+    if (opts.fetch) {
+      this._tunnelFetch = opts.fetch;
+    } else {
+      this._tunnelFetch = buildDohFetch(opts.resolver);
+    }
     this.timeoutMs = opts.timeoutMs ?? 30_000;
   }
 
@@ -309,7 +331,7 @@ export class SpizeClient {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
     try {
-      const resp = await this._fetch(url, {
+      const resp = await this._tunnelFetch(url, {
         method: "GET",
         headers: { "x-aex-ticket": ticketAsHeader(ticket) },
         signal: ctrl.signal,
@@ -334,6 +356,62 @@ export class SpizeClient {
       if (err instanceof Error && err.name === "AbortError") {
         throw new SpizeError(
           `fetch_from_tunnel timed out after ${this.timeoutMs}ms`,
+        );
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Upload a blob to a data plane's admin endpoint (M2 orchestrated mode).
+   *
+   * Wraps `POST /admin/blob/:transfer_id` on `aex-data-plane`. Used by
+   * demos and desktop orchestrators that launch a data-plane with a
+   * short-lived admin token and push blobs for pre-declared transfer
+   * IDs. DoH-routed, same reason as {@link fetchFromTunnel}.
+   */
+  async uploadBlobAdmin(args: {
+    dataPlaneUrl: string;
+    transferId: string;
+    adminToken: string;
+    payload: Uint8Array;
+    mime?: string;
+    filename?: string;
+  }): Promise<void> {
+    const mime = args.mime ?? "application/octet-stream";
+    const filename = args.filename ?? "blob";
+    const base = args.dataPlaneUrl.replace(/\/+$/, "");
+    const qs = new URLSearchParams({ mime, filename }).toString();
+    const url = `${base}/admin/blob/${args.transferId}?${qs}`;
+
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
+    try {
+      const resp = await this._tunnelFetch(url, {
+        method: "POST",
+        headers: {
+          "x-aex-admin-token": args.adminToken,
+          "content-type": "application/octet-stream",
+        },
+        // Uint8Array is a valid BodyInit in both the lib.dom fetch and
+        // the undici fetch used by Node, but the types diverge — cast
+        // keeps TS happy across both.
+        body: args.payload as unknown as ReadableStream<Uint8Array>,
+        signal: ctrl.signal,
+      });
+      if (resp.status !== 201) {
+        const body = await resp.text().catch(() => "");
+        throw new SpizeError(
+          `admin upload rejected: status=${resp.status} body=${body.slice(0, 300)}`,
+        );
+      }
+    } catch (err) {
+      if (err instanceof SpizeError) throw err;
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new SpizeError(
+          `upload_blob_admin timed out after ${this.timeoutMs}ms`,
         );
       }
       throw err;

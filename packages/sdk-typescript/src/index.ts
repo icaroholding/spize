@@ -25,3 +25,22 @@ export {
   MIN_NONCE_LEN,
   MAX_NONCE_LEN,
 } from "./wire.js";
+export {
+  CloudflareDoHResolver,
+  buildDohFetch,
+  needsDoh,
+} from "./resolver.js";
+export {
+  RetryPolicy,
+  retryWithBackoff,
+} from "./retry.js";
+export {
+  detectNetworkState,
+  consensus,
+  networkStateToStdoutValue,
+  APPLE_URL,
+  GOOGLE_URL,
+  MS_URL,
+  type NetworkState,
+  type DetectNetworkStateOptions,
+} from "./captive.js";
