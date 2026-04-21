@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aex-audit"
-version = "1.2.0-alpha.1"
+version = "1.2.0-alpha.3"
 dependencies = [
  "aex-core",
  "async-trait",
@@ -22,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "aex-billing"
-version = "1.2.0-alpha.1"
+version = "1.2.0-alpha.3"
 dependencies = [
  "aex-policy",
  "async-trait",
@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "aex-control-plane"
-version = "1.2.0-alpha.1"
+version = "1.2.0-alpha.3"
 dependencies = [
  "aex-audit",
  "aex-core",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "aex-core"
-version = "1.2.0-alpha.1"
+version = "1.2.0-alpha.3"
 dependencies = [
  "async-trait",
  "serde",
@@ -74,11 +74,12 @@ dependencies = [
 
 [[package]]
 name = "aex-data-plane"
-version = "1.2.0-alpha.1"
+version = "1.2.0-alpha.3"
 dependencies = [
  "aex-audit",
  "aex-core",
  "aex-scanner",
+ "aex-tunnel",
  "async-trait",
  "axum",
  "ed25519-dalek",
@@ -95,11 +96,12 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
 name = "aex-identity"
-version = "1.2.0-alpha.1"
+version = "1.2.0-alpha.3"
 dependencies = [
  "aex-core",
  "async-trait",
@@ -114,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "aex-policy"
-version = "1.2.0-alpha.1"
+version = "1.2.0-alpha.3"
 dependencies = [
  "aex-core",
  "aex-scanner",
@@ -128,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "aex-scanner"
-version = "1.2.0-alpha.1"
+version = "1.2.0-alpha.3"
 dependencies = [
  "aex-core",
  "async-trait",
@@ -144,7 +146,7 @@ dependencies = [
 
 [[package]]
 name = "aex-tunnel"
-version = "1.2.0-alpha.1"
+version = "1.2.0-alpha.3"
 dependencies = [
  "async-trait",
  "serde",

@@ -79,7 +79,7 @@ AEX is the file-transfer layer agents should have had from day one.
 
 ## Hosted registry (planned)
 
-We plan to operate a reference hosted registry at **spize.ai** so teams can adopt AEX without running their own control plane. Pricing, free tier details, and SLA will be published when the service enters public beta. Until then, running your own control plane is the path — see the Quick start above.
+We plan to operate a reference hosted registry at **spize.io** so teams can adopt AEX without running their own control plane. Pricing, free tier details, and SLA will be published when the service enters public beta. Until then, running your own control plane is the path — see the Quick start above.
 
 Self-hosting vs the future hosted service will be a classic trade-off of operational convenience vs data control. Both are first-class citizens of the protocol.
 

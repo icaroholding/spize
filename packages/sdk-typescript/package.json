@@ -1,14 +1,14 @@
 {
   "name": "@aexproto/sdk",
-  "version": "1.2.0-alpha.1",
+  "version": "1.2.0-alpha.3",
   "description": "TypeScript SDK for AEX — the Agent Exchange Protocol.",
   "license": "Apache-2.0",
-  "author": "Icaro Holding <oss@spize.ai>",
+  "author": "Icaro Holding <oss@spize.io>",
   "repository": {
     "type": "git",
     "url": "https://github.com/icaroholding/aex"
   },
-  "homepage": "https://spize.ai",
+  "homepage": "https://spize.io",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

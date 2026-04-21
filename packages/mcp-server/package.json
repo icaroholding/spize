@@ -1,15 +1,15 @@
 {
   "name": "@aexproto/mcp-server",
-  "version": "1.2.0-alpha.1",
+  "version": "1.2.0-alpha.3",
   "private": false,
   "description": "MCP server exposing AEX (Agent Exchange Protocol) tools (send, inbox, download, ack) to Claude Desktop / Cursor / any MCP host.",
   "license": "Apache-2.0",
-  "author": "Icaro Holding <oss@spize.ai>",
+  "author": "Icaro Holding <oss@spize.io>",
   "repository": {
     "type": "git",
     "url": "https://github.com/icaroholding/aex"
   },
-  "homepage": "https://spize.ai",
+  "homepage": "https://spize.io",
   "type": "module",
   "main": "./dist/index.js",
   "bin": {
@@ -26,7 +26,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
-    "@aexproto/sdk": "1.2.0-alpha.1",
+    "@aexproto/sdk": "1.2.0-alpha.3",
     "zod": "^3.23.0"
   },
   "devDependencies": {

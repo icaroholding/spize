@@ -14,11 +14,11 @@ members = [
 
 [workspace.package]
 edition = "2021"
-version = "1.2.0-alpha.1"
+version = "1.2.0-alpha.3"
 license = "Apache-2.0"
 repository = "https://github.com/icaroholding/aex"
-homepage = "https://spize.ai"
-authors = ["Icaro Holding <oss@spize.ai>"]
+homepage = "https://spize.io"
+authors = ["Icaro Holding <oss@spize.io>"]
 rust-version = "1.75"
 
 [workspace.dependencies]

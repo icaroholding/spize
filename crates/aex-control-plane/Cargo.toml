@@ -5,8 +5,8 @@ version.workspace = true
 edition.workspace = true
 license = "BUSL-1.1"
 repository.workspace = true
-homepage = "https://spize.ai"
-authors = ["Icaro Holding <oss@spize.ai>"]
+homepage = "https://spize.io"
+authors = ["Icaro Holding <oss@spize.io>"]
 keywords = ["aex", "agent", "protocol", "control-plane"]
 categories = ["network-programming"]
 
@@ -15,10 +15,10 @@ name = "aex-control-plane"
 path = "src/main.rs"
 
 [dependencies]
-aex-core = { path = "../aex-core", version = "=1.2.0-alpha.1" }
-aex-audit = { path = "../aex-audit", version = "=1.2.0-alpha.1" }
-aex-scanner = { path = "../aex-scanner", version = "=1.2.0-alpha.1" }
-aex-policy = { path = "../aex-policy", version = "=1.2.0-alpha.1" }
+aex-core = { path = "../aex-core", version = "=1.2.0-alpha.3" }
+aex-audit = { path = "../aex-audit", version = "=1.2.0-alpha.3" }
+aex-scanner = { path = "../aex-scanner", version = "=1.2.0-alpha.3" }
+aex-policy = { path = "../aex-policy", version = "=1.2.0-alpha.3" }
 
 rand.workspace = true
 

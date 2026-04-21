@@ -196,7 +196,7 @@ const TOOL_DEFS = [
 // ---------- server ----------
 
 const server = new Server(
-  { name: "aex-mcp-server", version: "1.2.0-alpha.1" },
+  { name: "aex-mcp-server", version: "1.2.0-alpha.3" },
   { capabilities: { tools: {} } },
 );
 

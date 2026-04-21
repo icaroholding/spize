@@ -5,15 +5,20 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage = "https://spize.ai"
-authors = ["Icaro Holding <oss@spize.ai>"]
+homepage = "https://spize.io"
+authors = ["Icaro Holding <oss@spize.io>"]
 keywords = ["aex", "data-plane", "peer-to-peer", "file-transfer"]
 categories = ["network-programming"]
 
+[[bin]]
+name = "aex-data-plane"
+path = "src/main.rs"
+
 [dependencies]
-aex-core = { path = "../aex-core", version = "=1.2.0-alpha.1" }
-aex-scanner = { path = "../aex-scanner", version = "=1.2.0-alpha.1" }
-aex-audit = { path = "../aex-audit", version = "=1.2.0-alpha.1" }
+aex-core = { path = "../aex-core", version = "=1.2.0-alpha.3" }
+aex-scanner = { path = "../aex-scanner", version = "=1.2.0-alpha.3" }
+aex-audit = { path = "../aex-audit", version = "=1.2.0-alpha.3" }
+aex-tunnel = { path = "../aex-tunnel", version = "=1.2.0-alpha.3" }
 
 # HTTP
 axum = { workspace = true }
@@ -37,6 +42,7 @@ sha2.workspace = true
 # Errors & logging
 thiserror.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
 
 # Time
 time = { workspace = true }

@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-aex-core = { path = "../aex-core", version = "=1.2.0-alpha.1" }
+aex-core = { path = "../aex-core", version = "=1.2.0-alpha.3" }
 
 async-trait.workspace = true
 ed25519-dalek.workspace = true

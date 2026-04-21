@@ -4,14 +4,34 @@ All notable changes are recorded here. Versioning follows [semver](https://semve
 
 ## Unreleased
 
-Planned for v1.2.0-alpha.3 / v1.2.0:
-- End-to-end M2 demo with orchestrated Cloudflare tunnel
-- MCP server parity with M2 flow (`aex_request_ticket`, `aex_fetch_from_tunnel`)
-- TypeScript SDK M2 helpers
+Planned for v1.2.0 stable:
 - Admin dashboard: M2 transfer visualization
-- Hosted service beta at spize.ai
+- Hosted service beta at spize.io
+- Cedar DSL in `aex-policy`
+- Real Rekor HTTP submitter (non-stub)
+- Real Stripe HTTP calls in `aex-billing`
+
+## [1.2.0-alpha.3] — in progress
+
+Sprint 1 scope: close M2 end-to-end, wire release automation, correct domain references.
+
+### Added
+- `aex-tunnel::CloudflaredTunnel` — real orchestration of the `cloudflared` binary (fork + URL extraction + lifecycle)
+- Integration test covering tunnel lifecycle (start → reachable → Drop → cleanup)
+- MCP server M2 tools: `aex_request_ticket`, `aex_fetch_from_tunnel`
+- TypeScript SDK M2 helpers: `sendViaTunnel`, `requestTicket`, `fetchFromTunnel`, `DataPlaneTicket` type
+- `examples/demo_two_agents_cloudflare.py` — first end-to-end demo with real Cloudflare tunnel
+
+### Changed
+- Domain references corrected from `spize.ai` to `spize.io` across README, CHANGELOG, package manifests, wire-format test fixtures, env example, code of conduct
+- Workspace version bumped to `1.2.0-alpha.3`; internal `aex-*` dep pins bumped to match
+
+### Fixed
+- Version drift: `Cargo.toml` / `package.json` / `pyproject.toml` now match the published tag (prior `v1.2.0-alpha.2` tag existed but the manifests were never bumped and nothing was published — alpha.3 is the first consistent release)
 
 ## [1.2.0-alpha.2] — 2026-04-21
+
+> Tagged in git but **not published** to any registry. Released for the record below; the actual first published release after `alpha.1` is `alpha.3`.
 
 ### Added
 - `aex-data-plane` crate: axum server that streams blobs behind a signed ticket

@@ -417,12 +417,12 @@ mod tests {
         let bytes = data_ticket_bytes(
             "tx_abc123",
             "spize:acme/bob:ddeeff",
-            "https://data.spize.ai",
+            "https://data.spize.io",
             1_700_000_100,
             "0123456789abcdef0123456789abcdef",
         )
         .unwrap();
-        let expected = "spize-data-ticket:v1\ntransfer=tx_abc123\nrecipient=spize:acme/bob:ddeeff\ndata_plane=https://data.spize.ai\nexpires=1700000100\nnonce=0123456789abcdef0123456789abcdef";
+        let expected = "spize-data-ticket:v1\ntransfer=tx_abc123\nrecipient=spize:acme/bob:ddeeff\ndata_plane=https://data.spize.io\nexpires=1700000100\nnonce=0123456789abcdef0123456789abcdef";
         assert_eq!(bytes, expected.as_bytes());
     }
 

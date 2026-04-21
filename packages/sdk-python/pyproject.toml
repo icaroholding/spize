@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aex-sdk"
-version = "1.2.0a1"
+version = "1.2.0a3"
 description = "Python SDK for AEX — the Agent Exchange Protocol."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Icaro Holding", email = "oss@spize.ai" }]
+authors = [{ name = "Icaro Holding", email = "oss@spize.io" }]
 keywords = ["aex", "agent", "protocol", "identity", "transfer", "p2p"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -33,7 +33,7 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://spize.ai"
+Homepage = "https://spize.io"
 Repository = "https://github.com/icaroholding/aex"
 Documentation = "https://github.com/icaroholding/aex/tree/master/docs"
 
