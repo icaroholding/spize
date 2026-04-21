@@ -58,7 +58,17 @@ jobs:
         with:
           node-version: "20"
       - name: Install workspace
-        run: npm install
+        # npm 10's handling of rollup's platform-specific optional deps
+        # (@rollup/rollup-linux-x64-gnu etc.) is buggy when the committed
+        # package-lock.json was generated on a different platform. The
+        # lockfile we ship is macOS-generated; deleting it here forces
+        # npm to resolve + install the Linux binaries fresh. We trade a
+        # tiny amount of reproducibility for CI that doesn't depend on
+        # whoever last ran `npm install` locally.
+        # Upstream bug: https://github.com/npm/cli/issues/4828
+        run: |
+          rm -f package-lock.json
+          npm install
       - name: Build all packages
         run: npm run build
       - name: Test all packages
