@@ -102,7 +102,9 @@ def main() -> int:
             f"{ticket.expires - int(time.time())}s"
         )
 
-        bytes_ = bob.fetch_from_tunnel(ticket)
+        # Fetch via curl for the same DNS-robustness reason as the
+        # upload step. See upload_to_data_plane() docstring.
+        bytes_ = fetch_from_tunnel_via_curl(ticket)
         print(f"[6/8] Bob fetched {len(bytes_)} bytes from the tunnel")
 
         if bytes_ != PAYLOAD:
@@ -218,15 +220,106 @@ def upload_to_data_plane(
     mime: str,
     filename: str,
 ) -> None:
-    r = httpx.post(
-        f"{data_plane_url}/admin/blob/{transfer_id}",
-        params={"mime": mime, "filename": filename},
-        headers={"x-aex-admin-token": token, "content-type": "application/octet-stream"},
-        content=payload,
-        timeout=30.0,
+    """POST the blob to the data plane's admin endpoint.
+
+    Delegates to `curl` instead of Python's httpx because Python's
+    default resolver (via macOS getaddrinfo) applies the local network's
+    search domain (e.g. `.nexxt` on a wifi called "nexxt"), which
+    corrupts lookups of public *.trycloudflare.com hostnames into
+    `<host>.nexxt` NXDOMAIN. curl uses a DNS path that doesn't hit this
+    on macOS, so the call just works. On CI / Linux boxes without a
+    wifi search domain, Python's resolver would also work — using curl
+    uniformly keeps the demo reproducible.
+    """
+    import shutil
+    import tempfile
+    import urllib.parse
+
+    if shutil.which("curl") is None:
+        raise RuntimeError(
+            "curl not found on PATH; the demo needs it as a DNS-robust "
+            "fallback for uploading blobs to the data plane."
+        )
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".blob") as f:
+        f.write(payload)
+        blob_path = f.name
+
+    qs = urllib.parse.urlencode({"mime": mime, "filename": filename})
+    url = f"{data_plane_url}/admin/blob/{transfer_id}?{qs}"
+
+    try:
+        proc = subprocess.run(
+            [
+                "curl",
+                "--silent",
+                "--show-error",
+                "--fail-with-body",
+                "-X",
+                "POST",
+                url,
+                "-H",
+                f"x-aex-admin-token: {token}",
+                "-H",
+                "content-type: application/octet-stream",
+                "--data-binary",
+                f"@{blob_path}",
+                "--max-time",
+                "30",
+                "-w",
+                "HTTP_CODE=%{http_code}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+    finally:
+        try:
+            os.unlink(blob_path)
+        except OSError:
+            pass
+
+    if proc.returncode != 0 or "HTTP_CODE=201" not in proc.stdout:
+        raise RuntimeError(
+            f"admin upload failed (exit={proc.returncode}): "
+            f"stdout={proc.stdout[-500:]!r} stderr={proc.stderr[-500:]!r}"
+        )
+
+
+def fetch_from_tunnel_via_curl(ticket) -> bytes:
+    """Same rationale as upload_to_data_plane: uses curl so the DNS
+    lookup of *.trycloudflare.com doesn't hit macOS's search-domain
+    NXDOMAIN fallback."""
+    import shutil
+
+    if shutil.which("curl") is None:
+        raise RuntimeError("curl not found on PATH")
+
+    url = f"{ticket.data_plane_url}/blob/{ticket.transfer_id}"
+    proc = subprocess.run(
+        [
+            "curl",
+            "--silent",
+            "--show-error",
+            "--fail-with-body",
+            "-X",
+            "GET",
+            url,
+            "-H",
+            f"x-aex-ticket: {ticket.as_header()}",
+            "--max-time",
+            "30",
+            "-o",
+            "-",
+        ],
+        capture_output=True,
+        timeout=45,
     )
-    if r.status_code != 201:
-        raise RuntimeError(f"admin upload failed: {r.status_code} {r.text}")
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"tunnel fetch failed (exit={proc.returncode}): {proc.stderr[-500:]!r}"
+        )
+    return proc.stdout
 
 
 if __name__ == "__main__":
