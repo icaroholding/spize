@@ -18,8 +18,24 @@
 //! which lets an orchestrating script (the sender SDK or a demo runner)
 //! push a blob AFTER the control plane assigns a transfer_id.
 //!
-//! On startup the binary prints `AEX_DATA_PLANE_URL=<public_url>` so
-//! orchestrating scripts can capture it.
+//! ## Readiness invariant
+//!
+//! Orchestrators MUST wait for the binary to emit BOTH
+//!
+//! ```text
+//! AEX_DATA_PLANE_URL=<public_url>
+//! AEX_READY=1
+//! ```
+//!
+//! on stdout before treating the data plane as usable. `AEX_READY=1` is
+//! only emitted after the binary has successfully round-tripped a
+//! `GET /healthz` request through its own tunnel — proving that the
+//! public URL's DNS record has propagated AND that the Cloudflare edge
+//! routes traffic back to this process. Skipping this wait is the
+//! cause of the "nodename not known" class of bugs.
+//!
+//! If the self-roundtrip fails within the startup timeout the binary
+//! exits non-zero; it never publishes a half-ready URL.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -96,18 +112,29 @@ struct AdminInsertQuery {
     filename: Option<String>,
 }
 
+/// Upper bound for the public tunnel to become reachable from the
+/// outside world after `cloudflared` reports "connected". Cloudflare
+/// quick tunnels typically land in DNS within 5-30s; we allow extra
+/// headroom for slow networks. Negotiable per-deployment via
+/// `AEX_READINESS_TIMEOUT_SECS`.
+const DEFAULT_READINESS_TIMEOUT_SECS: u64 = 120;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing();
 
     let opts = Opts::from_env()?;
+    let readiness_timeout = std::env::var("AEX_READINESS_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_READINESS_TIMEOUT_SECS);
 
     let listener = TcpListener::bind(&opts.bind_addr).await?;
     let local_addr = listener.local_addr()?;
     tracing::info!(%local_addr, "aex-data-plane listener bound");
 
-    let (public_url, _tunnel_guard) = resolve_public_url(&opts, local_addr.port()).await?;
-    tracing::info!(%public_url, "public URL resolved");
+    let (public_url, tunnel_guard) = resolve_public_url(&opts, local_addr.port()).await?;
+    tracing::info!(%public_url, "tunnel reports connected; waiting for public reachability");
 
     let shared_source = load_blob_source(&opts).await?;
 
@@ -147,14 +174,83 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // Machine-readable line for orchestrating scripts (e.g. demo runner).
+    // Spawn the server immediately so the tunnel has something to talk
+    // to when it finishes propagating in public DNS. We will join this
+    // task at the bottom.
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await
+    });
+
+    // Self-verify that a full external round-trip (DNS → Cloudflare
+    // edge → our process) works. Any orchestrator downstream — the
+    // demo, the desktop, a hosted deployer — then only has to watch
+    // stdout for `AEX_READY=1`.
+    if let Err(err) = verify_tunnel_reachable(&public_url, readiness_timeout).await {
+        tracing::error!(error = %err, "tunnel failed self-roundtrip — refusing to advertise URL");
+        server_handle.abort();
+        drop(tunnel_guard);
+        return Err(err);
+    }
+
+    // Order matters: URL first, then READY. Orchestrators parse both.
     println!("AEX_DATA_PLANE_URL={}", public_url);
+    println!("AEX_READY=1");
+    tracing::info!(%public_url, "data plane ready");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    match server_handle.await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.into()),
+        Err(join_err) => Err(Box::new(join_err)),
+    }
+}
 
-    Ok(())
+/// Poll `GET <public_url>/healthz` from outside until we get a 200 or
+/// the overall `timeout` elapses. Uses a fresh `reqwest::Client` per
+/// attempt so a pooled "nodename not known" doesn't stick across
+/// retries. Logs each failure at debug so operators can diagnose slow
+/// DNS without spamming info.
+async fn verify_tunnel_reachable(
+    public_url: &str,
+    timeout_secs: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let healthz = format!("{}/healthz", public_url.trim_end_matches('/'));
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let mut attempt: u32 = 0;
+    let mut last_err: String = "no attempts made".into();
+
+    while tokio::time::Instant::now() < deadline {
+        attempt += 1;
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .pool_idle_timeout(std::time::Duration::from_secs(0))
+            .build()?;
+        match client.get(&healthz).send().await {
+            Ok(r) if r.status().is_success() => {
+                tracing::info!(attempt, url = %healthz, "self-roundtrip OK");
+                return Ok(());
+            }
+            Ok(r) => {
+                last_err = format!("status {}", r.status());
+            }
+            Err(e) => {
+                last_err = e.to_string();
+            }
+        }
+        tracing::debug!(attempt, err = %last_err, "self-roundtrip not ready");
+        // Fixed 2s cadence — DNS propagation doesn't benefit from
+        // exponential backoff and we want consistent progress.
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+
+    Err(format!(
+        "self-roundtrip to {healthz} never succeeded within {timeout_secs}s after {attempt} \
+         attempts (last error: {last_err}). This usually means (a) the Cloudflare quick-tunnel \
+         URL never propagated into public DNS — check `cloudflared` logs, or (b) this process \
+         is behind something that blocks outbound HTTPS to Cloudflare."
+    )
+    .into())
 }
 
 async fn admin_insert_blob(

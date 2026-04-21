@@ -39,12 +39,10 @@ import atexit
 import os
 import secrets
 import signal
-import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.parse import urlparse
 
 import httpx
 
@@ -62,9 +60,10 @@ def main() -> int:
 
     admin_token = secrets.token_urlsafe(32)
     data_plane, data_plane_url = start_data_plane(cp_pubkey, admin_token)
-    print(f"[1/8] data plane subprocess up, URL = {data_plane_url}")
-    wait_for_reachable(data_plane_url, dns_timeout=120.0, http_timeout=30.0)
-    print(f"[1/8] tunnel fully reachable from the public internet")
+    # `start_data_plane` only returns after the binary emits AEX_READY=1,
+    # which is itself gated on a successful self-roundtrip through the
+    # tunnel. No client-side reachability check is needed.
+    print(f"[1/8] data plane ready at {data_plane_url}")
 
     alice_id = Identity.generate(org="demo", name=f"alice{int(time.time())}")
     bob_id = Identity.generate(org="demo", name=f"bob{int(time.time())}")
@@ -172,9 +171,16 @@ def start_data_plane(cp_pubkey: str, admin_token: str) -> tuple[subprocess.Popen
 
     atexit.register(cleanup)
 
-    # Read stdout until we see AEX_DATA_PLANE_URL=… (or the process dies).
-    deadline = time.time() + 120.0  # cargo first-build can take a while
+    # Read stdout until we see BOTH `AEX_DATA_PLANE_URL=...` and
+    # `AEX_READY=1`. The binary prints them in that order, and only
+    # emits the second one after verifying a full round-trip through
+    # the tunnel. Waiting for both is the readiness contract the
+    # binary guarantees.
+    # 240s total: 120s for cargo first-build, up to 120s for DNS
+    # propagation + self-roundtrip inside the binary.
+    deadline = time.time() + 240.0
     url: str | None = None
+    ready = False
     assert proc.stdout is not None
     while time.time() < deadline:
         line = proc.stdout.readline()
@@ -183,78 +189,24 @@ def start_data_plane(cp_pubkey: str, admin_token: str) -> tuple[subprocess.Popen
                 stderr_tail = (proc.stderr.read() if proc.stderr else "") or ""
                 raise RuntimeError(
                     f"aex-data-plane exited (code {proc.returncode}) before "
-                    f"emitting its URL.\n---- stderr ----\n{stderr_tail[-2000:]}"
+                    f"it became ready.\n---- stderr ----\n{stderr_tail[-3000:]}"
                 )
             time.sleep(0.1)
             continue
         if line.startswith("AEX_DATA_PLANE_URL="):
             url = line.strip().split("=", 1)[1]
+        elif line.strip() == "AEX_READY=1":
+            ready = True
             break
 
-    if not url:
+    if not (url and ready):
         cleanup()
-        raise RuntimeError("data plane did not report its URL within 120s")
-
-    return proc, url
-
-
-def wait_for_reachable(
-    url: str,
-    dns_timeout: float = 120.0,
-    http_timeout: float = 30.0,
-) -> None:
-    """Wait for a Cloudflare quick tunnel to be reachable end-to-end.
-
-    Done in two phases so failures point at the right cause:
-    1. DNS phase — `socket.getaddrinfo` for the hostname until it
-       resolves. `*.trycloudflare.com` records typically appear in
-       public DNS 5-30 seconds AFTER cloudflared emits the URL on
-       stderr, and macOS caches negative lookups (NXDOMAIN) for
-       several seconds, so we poll the raw resolver rather than relying
-       on httpx's connection pool which may cache its own failures.
-    2. HTTP phase — once DNS answers, poll `GET /healthz` with a fresh
-       httpx client each attempt. A healthy response means the tunnel,
-       the Cloudflare edge, and our axum server are all up.
-    """
-    hostname = urlparse(url).hostname
-    if hostname is None:
-        raise RuntimeError(f"cannot parse hostname from {url!r}")
-
-    dns_deadline = time.time() + dns_timeout
-    last_dns_err: Exception | None = None
-    while time.time() < dns_deadline:
-        try:
-            socket.getaddrinfo(hostname, 443)
-            break
-        except socket.gaierror as e:
-            last_dns_err = e
-            time.sleep(2.0)
-    else:
         raise RuntimeError(
-            f"DNS never resolved {hostname} within {dns_timeout}s "
-            f"(last error: {last_dns_err!r}). "
-            "cloudflared may have emitted a URL that never reached "
-            "Cloudflare's authoritative DNS."
+            f"data plane never reached AEX_READY=1 within 240s "
+            f"(url_seen={url is not None}, ready={ready})"
         )
 
-    http_deadline = time.time() + http_timeout
-    last_http_err: Exception | None = None
-    while time.time() < http_deadline:
-        try:
-            with httpx.Client(timeout=5.0) as c:
-                r = c.get(f"{url}/healthz")
-                if r.status_code == 200:
-                    return
-                last_http_err = RuntimeError(
-                    f"/healthz returned {r.status_code}: {r.text[:200]!r}"
-                )
-        except Exception as e:
-            last_http_err = e
-        time.sleep(1.0)
-    raise RuntimeError(
-        f"DNS resolved but {url}/healthz not 200 within {http_timeout}s "
-        f"(last error: {last_http_err!r})"
-    )
+    return proc, url
 
 
 def upload_to_data_plane(

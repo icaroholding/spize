@@ -23,6 +23,7 @@ Sprint 1 scope: close M2 end-to-end, wire release automation, correct domain ref
 - `transferReceiptBytes` in TS wire layer now accepts the `request_ticket` action (was already present in Rust + Python)
 - npm workspaces root so `@aexproto/mcp-server` picks up `@aexproto/sdk` locally during development
 - `examples/demo_two_agents_cloudflare.py` — first end-to-end demo with real Cloudflare tunnel
+- **Readiness invariant** in `aex-data-plane` binary: emits `AEX_DATA_PLANE_URL=…` + `AEX_READY=1` on stdout only after a successful self-roundtrip through its own tunnel (DNS + Cloudflare edge + process). Orchestrators wait for `AEX_READY=1`; client-side reachability polls are no longer needed. Timeout configurable via `AEX_READINESS_TIMEOUT_SECS` (default 120s). Documented in the binary's module-level docs as a conformance requirement.
 
 ### Changed
 - Domain references corrected from `spize.ai` to `spize.io` across README, CHANGELOG, package manifests, wire-format test fixtures, env example, code of conduct
