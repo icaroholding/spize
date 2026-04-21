@@ -29,8 +29,8 @@ DATABASE_URL=postgres://aex:aex_dev@localhost:5432/aex cargo test --workspace
 - `packages/mcp-server` — npm `@aexproto/mcp-server`
 
 ## Related
-- Spize Desktop (private): https://github.com/icaroholding/spize-desktop
-- Spize Enterprise (private): https://github.com/icaroholding/spize-enterprise
+- Spize Desktop (private): https://github.com/icaroholding/aex-desktop
+- Spize Enterprise (private): https://github.com/icaroholding/aex-enterprise
 - EtereCitizen (public): https://github.com/icaroholding/EtereCitizen
 
 ## Identity format

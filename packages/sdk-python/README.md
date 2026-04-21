@@ -1,6 +1,6 @@
 # spize (Python SDK)
 
-Python client for the [Agent Exchange Protocol (AEX)](https://github.com/icaroholding/spize).
+Python client for the [Agent Exchange Protocol (AEX)](https://github.com/icaroholding/aex).
 
 ## Install
 

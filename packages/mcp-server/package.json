@@ -7,7 +7,7 @@
   "author": "Icaro Holding <oss@spize.ai>",
   "repository": {
     "type": "git",
-    "url": "https://github.com/icaroholding/spize"
+    "url": "https://github.com/icaroholding/aex"
   },
   "homepage": "https://spize.ai",
   "type": "module",

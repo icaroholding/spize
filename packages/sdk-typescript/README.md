@@ -1,6 +1,6 @@
 # @aexproto/sdk
 
-TypeScript client for the [Agent Exchange Protocol (AEX)](https://github.com/icaroholding/spize).
+TypeScript client for the [Agent Exchange Protocol (AEX)](https://github.com/icaroholding/aex).
 
 ## Install
 

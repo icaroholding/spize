@@ -22,7 +22,7 @@ Thank you for considering a contribution. AEX is an open protocol — the more i
 ### First build
 
 ```bash
-git clone https://github.com/icaroholding/spize
+git clone https://github.com/icaroholding/aex
 cd spize
 
 # Rust workspace

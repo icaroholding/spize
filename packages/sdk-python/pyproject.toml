@@ -34,8 +34,8 @@ dev = [
 
 [project.urls]
 Homepage = "https://spize.ai"
-Repository = "https://github.com/icaroholding/spize"
-Documentation = "https://github.com/icaroholding/spize/tree/master/docs"
+Repository = "https://github.com/icaroholding/aex"
+Documentation = "https://github.com/icaroholding/aex/tree/master/docs"
 
 [tool.setuptools.packages.find]
 where = ["src"]
