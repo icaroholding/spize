@@ -28,11 +28,7 @@ pub struct TransportEntry {
 }
 
 impl TransportEntry {
-    pub fn new(
-        kind: impl Into<String>,
-        priority: i32,
-        provider: Box<dyn TunnelProvider>,
-    ) -> Self {
+    pub fn new(kind: impl Into<String>, priority: i32, provider: Box<dyn TunnelProvider>) -> Self {
         Self {
             kind: kind.into(),
             priority,
@@ -46,7 +42,11 @@ impl TransportEntry {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum TransportStartOutcome {
     /// Transport came up. `url` is what the recipient will dial.
-    Started { kind: String, url: String, priority: i32 },
+    Started {
+        kind: String,
+        url: String,
+        priority: i32,
+    },
     /// Transport failed to start; the rest of the orchestrator keeps
     /// going. `reason` surfaces verbatim in `AEX_TRANSPORTS_JSON`.
     Failed { kind: String, reason: String },
@@ -232,9 +232,15 @@ mod tests {
         let mut orch = TunnelOrchestrator::new(entries);
         let outcomes = orch.start_all(8080).await;
         assert_eq!(outcomes.len(), 3);
-        assert!(matches!(&outcomes[0], TransportStartOutcome::Started { kind, .. } if kind == "cloudflare_quick"));
-        assert!(matches!(&outcomes[1], TransportStartOutcome::Failed { kind, .. } if kind == "iroh"));
-        assert!(matches!(&outcomes[2], TransportStartOutcome::Started { kind, .. } if kind == "frp"));
+        assert!(
+            matches!(&outcomes[0], TransportStartOutcome::Started { kind, .. } if kind == "cloudflare_quick")
+        );
+        assert!(
+            matches!(&outcomes[1], TransportStartOutcome::Failed { kind, .. } if kind == "iroh")
+        );
+        assert!(
+            matches!(&outcomes[2], TransportStartOutcome::Started { kind, .. } if kind == "frp")
+        );
 
         let eps = orch.endpoints();
         assert_eq!(eps.len(), 2, "failures excluded from endpoints()");
@@ -250,21 +256,9 @@ mod tests {
     #[tokio::test]
     async fn endpoints_sorted_by_priority_then_order() {
         let entries = vec![
-            TransportEntry::new(
-                "a",
-                5,
-                Box::new(StubTunnel::new("https://a")),
-            ),
-            TransportEntry::new(
-                "b",
-                1,
-                Box::new(StubTunnel::new("https://b")),
-            ),
-            TransportEntry::new(
-                "c",
-                1,
-                Box::new(StubTunnel::new("https://c")),
-            ),
+            TransportEntry::new("a", 5, Box::new(StubTunnel::new("https://a"))),
+            TransportEntry::new("b", 1, Box::new(StubTunnel::new("https://b"))),
+            TransportEntry::new("c", 1, Box::new(StubTunnel::new("https://c"))),
         ];
         let mut orch = TunnelOrchestrator::new(entries);
         orch.start_all(0).await;

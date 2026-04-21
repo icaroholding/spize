@@ -101,10 +101,7 @@ async fn two_peers_echo_over_iroh() {
         .expect("outer timeout during connect")
         .expect("peer B connect to peer A");
 
-    let (mut send, mut recv) = conn
-        .open_bi()
-        .await
-        .expect("peer B open_bi against peer A");
+    let (mut send, mut recv) = conn.open_bi().await.expect("peer B open_bi against peer A");
 
     let payload = b"hello-aex-iroh\n";
     send.write_all(payload).await.expect("write payload");
@@ -125,5 +122,8 @@ async fn two_peers_echo_over_iroh() {
     endpoint_b.close().await;
     tunnel_a.stop().await.expect("tunnel_a stop");
     assert!(tunnel_a.public_url().is_none());
-    assert!(matches!(tunnel_a.status(), TunnelStatus::Disconnected { .. }));
+    assert!(matches!(
+        tunnel_a.status(),
+        TunnelStatus::Disconnected { .. }
+    ));
 }
