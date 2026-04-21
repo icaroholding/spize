@@ -47,7 +47,17 @@ class CloudflareDoHResolver:
         resolver — the whole point of this class is to avoid it.
         """
         query = dns.message.make_query(hostname, dns.rdatatype.A)
-        response = dns.query.https(query, self._doh_url, timeout=self._timeout)
+        # Force HTTP/2 for the DoH transport. dnspython's default tries
+        # HTTP/3 first, which raises `NoDOH` when the optional `aioquic`
+        # dependency isn't installed. AEX does not require HTTP/3 for
+        # DoH — any stack with TLS will do — so we pin H2 to keep the
+        # dependency surface small.
+        response = dns.query.https(
+            query,
+            self._doh_url,
+            timeout=self._timeout,
+            http_version=dns.query.HTTPVersion.H2,
+        )
         for rrset in response.answer:
             for rdata in rrset:
                 if rdata.rdtype == dns.rdatatype.A:
