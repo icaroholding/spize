@@ -2,7 +2,7 @@
 //! behind signed tickets and optionally orchestrates a Cloudflare tunnel
 //! so the URL is reachable across the internet.
 //!
-//! ## Usage (single-blob mode, used by demos)
+//! ## Usage (single-blob mode, pre-declared transfer_id)
 //!
 //! ```
 //! export AEX_CONTROL_PLANE_PUBLIC_KEY_HEX=<64 hex chars>
@@ -11,6 +11,12 @@
 //! export AEX_BLOB_MIME=text/plain
 //! aex-data-plane
 //! ```
+//!
+//! ## Usage (admin endpoint for dynamic blob upload)
+//!
+//! Set `AEX_ADMIN_TOKEN=<random>` to enable `POST /admin/blob/:transfer_id`,
+//! which lets an orchestrating script (the sender SDK or a demo runner)
+//! push a blob AFTER the control plane assigns a transfer_id.
 //!
 //! On startup the binary prints `AEX_DATA_PLANE_URL=<public_url>` so
 //! orchestrating scripts can capture it.
@@ -27,7 +33,14 @@ use aex_scanner::{
     size::SizeLimitScanner, ScanPipeline,
 };
 use aex_tunnel::{CloudflareQuickTunnel, TunnelProvider};
+use axum::body::Bytes;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse;
+use axum::routing::post;
+use axum::Router;
 use ed25519_dalek::VerifyingKey;
+use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tracing_subscriber::{prelude::*, EnvFilter};
@@ -43,6 +56,7 @@ struct Opts {
     blob_mime: Option<String>,
     blob_filename: Option<String>,
     max_transfer_bytes: u64,
+    admin_token: Option<String>,
 }
 
 impl Opts {
@@ -63,8 +77,23 @@ impl Opts {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(100 * 1024 * 1024),
+            admin_token: std::env::var("AEX_ADMIN_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty()),
         })
     }
+}
+
+#[derive(Clone)]
+struct AdminState {
+    source: Arc<InMemoryBlobSource>,
+    token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminInsertQuery {
+    mime: Option<String>,
+    filename: Option<String>,
 }
 
 #[tokio::main]
@@ -80,7 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (public_url, _tunnel_guard) = resolve_public_url(&opts, local_addr.port()).await?;
     tracing::info!(%public_url, "public URL resolved");
 
-    let blob_source = load_blob_source(&opts).await?;
+    let shared_source = load_blob_source(&opts).await?;
 
     let cp_pubkey_bytes: [u8; 32] = hex::decode(&opts.control_plane_public_key_hex)?
         .try_into()
@@ -97,20 +126,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let dp = DataPlane::new(DataPlaneConfig {
-        blob_source,
+        blob_source: shared_source.clone() as Arc<dyn BlobSource>,
         ticket_verifier: verifier,
         scanner: Some(scanner),
         scan_cache: Arc::new(RwLock::new(HashMap::new())),
     });
 
+    let mut app = dp.router();
+    if let Some(token) = opts.admin_token.clone() {
+        let admin: Router<()> = Router::new()
+            .route("/admin/blob/:transfer_id", post(admin_insert_blob))
+            .with_state(AdminState {
+                source: shared_source.clone(),
+                token,
+            });
+        app = app.merge(admin);
+        tracing::warn!(
+            "admin endpoint enabled at POST /admin/blob/:transfer_id — token-auth only, \
+             never expose this port to the public internet without a firewall"
+        );
+    }
+
     // Machine-readable line for orchestrating scripts (e.g. demo runner).
     println!("AEX_DATA_PLANE_URL={}", public_url);
 
-    axum::serve(listener, dp.router())
+    axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
     Ok(())
+}
+
+async fn admin_insert_blob(
+    State(st): State<AdminState>,
+    Path(transfer_id): Path<String>,
+    Query(q): Query<AdminInsertQuery>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    let provided = headers
+        .get("x-aex-admin-token")
+        .and_then(|v| v.to_str().ok());
+    if provided != Some(st.token.as_str()) {
+        return (StatusCode::UNAUTHORIZED, "bad admin token").into_response();
+    }
+    let metadata = BlobMetadata {
+        size: body.len() as u64,
+        mime: q.mime.unwrap_or_else(|| "application/octet-stream".into()),
+        filename: q.filename.unwrap_or_else(|| "blob".into()),
+    };
+    st.source
+        .insert(transfer_id.clone(), metadata, body.to_vec())
+        .await;
+    tracing::info!(%transfer_id, size = body.len(), "admin inserted blob");
+    (StatusCode::CREATED, "ok").into_response()
 }
 
 async fn resolve_public_url(
@@ -144,8 +213,10 @@ async fn resolve_public_url(
     }
 }
 
-async fn load_blob_source(opts: &Opts) -> Result<Arc<dyn BlobSource>, Box<dyn std::error::Error>> {
-    let source = InMemoryBlobSource::new();
+async fn load_blob_source(
+    opts: &Opts,
+) -> Result<Arc<InMemoryBlobSource>, Box<dyn std::error::Error>> {
+    let source = Arc::new(InMemoryBlobSource::new());
 
     if let Some(blob_path) = &opts.blob_path {
         let transfer_id = opts
@@ -172,7 +243,7 @@ async fn load_blob_source(opts: &Opts) -> Result<Arc<dyn BlobSource>, Box<dyn st
         tracing::info!(%transfer_id, path = %blob_path.display(), "preloaded blob");
     }
 
-    Ok(Arc::new(source))
+    Ok(source)
 }
 
 fn init_tracing() {

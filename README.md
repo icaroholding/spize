@@ -36,10 +36,19 @@ pip install -e ".[dev]"
 python examples/demo_two_agents.py
 ```
 
-The demo:
-1. Generates two Ed25519 identities (Alice and Bob), registers them with proof-of-possession.
-2. Alice signs an intent and sends a clean file → scanner passes → Bob downloads and acks.
-3. Alice tries to send the EICAR test string → scanner blocks → transfer rejected → audit chain records the rejection.
+The M1 demo exercises the control-plane-mediated path: bytes flow
+through `aex-control-plane`, scanner blocks EICAR, audit chain records
+the outcome.
+
+**Peer-to-peer M2 demo** (requires `cloudflared` on PATH):
+
+```bash
+python examples/demo_two_agents_cloudflare.py
+```
+
+This spawns `aex-data-plane` with a real Cloudflare quick-tunnel so
+bytes flow directly Alice → Bob. The control plane only signs
+short-lived tickets; it never sees the payload.
 
 Full walkthrough: [`docs/getting-started.md`](docs/getting-started.md).
 

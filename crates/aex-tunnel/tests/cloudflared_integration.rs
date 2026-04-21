@@ -31,8 +31,7 @@ async fn cloudflared_start_emits_url_and_drop_cleans_up() {
 
     // Give cloudflared up to 45s to boot and publish a URL. The provider
     // already has a 30s internal timeout — this is a generous outer bound.
-    let start_result =
-        tokio::time::timeout(Duration::from_secs(45), tunnel.start(port)).await;
+    let start_result = tokio::time::timeout(Duration::from_secs(45), tunnel.start(port)).await;
     let start_result = start_result.expect("outer timeout waiting for tunnel.start");
     start_result.expect("tunnel.start returned an error");
 

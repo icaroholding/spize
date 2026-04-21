@@ -1,17 +1,21 @@
 # Getting started with AEX
 
-Three-minute walkthrough: two Python agents exchange a file locally.
+Two walkthroughs: a simple **M1** demo (blob flows through control plane)
+and the production-style **M2** demo (bytes flow peer-to-peer over a
+Cloudflare tunnel, control plane never sees payload).
 
 ## Prerequisites
 
 - Docker Desktop running
 - Rust toolchain (stable)
 - Python 3.10+
+- For the M2 demo: `cloudflared` on PATH
+  (`brew install cloudflare/cloudflare/cloudflared` on macOS)
 
-## Steps
+## M1 demo — control-plane-mediated transfer
 
 ```bash
-# 1. Start the control plane
+# 1. Start Postgres + control plane
 docker compose -f deploy/docker-compose.dev.yml up -d
 DATABASE_URL=postgres://aex:aex_dev@localhost:5432/aex \
   cargo run -p aex-control-plane
@@ -23,21 +27,41 @@ pip install -e ".[dev]"
 python examples/demo_two_agents.py
 ```
 
-What the demo does:
+What happens:
 
-1. Generates two Ed25519 identities (Alice, Bob) and registers them
-   with the control plane via signed proof-of-possession.
-2. Alice signs a transfer intent over a small file (M1 path), the
-   scanner clears it, Bob downloads and acks it. The audit chain
-   records the event.
+1. Two Ed25519 identities (Alice, Bob) register with the control plane
+   via signed proof-of-possession.
+2. Alice signs a transfer intent, the control plane stores and scans
+   the blob, Bob downloads and acks it. The audit chain records it.
 3. Alice tries again with the EICAR test malware — the scanner blocks
    delivery, no bytes ever reach Bob.
 
-The M2 variant (`examples/demo_two_agents_m2.py`) exercises the new
-peer-to-peer flow where bytes never touch the control plane. It
-currently needs a running `cloudflared tunnel` to complete end-to-end;
-without it, the demo stops at ticket issuance (which is already a
-useful sanity check of the control-plane side).
+## M2 demo — peer-to-peer over a real Cloudflare tunnel
+
+```bash
+# 1. Keep the control plane from the M1 demo running.
+# 2. In a third terminal (venv already active):
+python examples/demo_two_agents_cloudflare.py
+```
+
+The demo script orchestrates the full flow in ~30 seconds:
+
+1. Fetches the control plane's signing public key via `/v1/public-key`.
+2. Spawns `cargo run -p aex-data-plane` with a Cloudflare quick-tunnel
+   and an admin endpoint protected by a random token; captures the
+   `AEX_DATA_PLANE_URL=https://*.trycloudflare.com` it prints.
+3. Registers Alice and Bob.
+4. Alice calls `send_via_tunnel` — the control plane records the
+   tunnel URL against a new `transfer_id` without ever seeing bytes.
+5. Alice uploads the blob to the data plane's admin endpoint.
+6. Bob calls `request_ticket` — the control plane signs a short-lived
+   ticket bound to the tunnel URL.
+7. Bob calls `fetch_from_tunnel` — bytes flow directly from Alice's
+   data plane to Bob. Verifies a byte-for-byte match.
+8. Bob acks; the audit chain head is printed.
+
+If step 2 times out, it's usually either a missing `cloudflared`
+binary or no outbound HTTPS — everything else should just work.
 
 ## Self-hosting the control plane in production
 
