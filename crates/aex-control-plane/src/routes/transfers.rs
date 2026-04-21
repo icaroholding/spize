@@ -887,23 +887,21 @@ pub async fn issue_ticket(
 /// complications that affect a binary trying to GET its own URL.
 async fn verify_tunnel_http_healthz(tunnel_url: &str) -> Result<(), ApiError> {
     let healthz = format!("{}/healthz", tunnel_url.trim_end_matches('/'));
-    // Handing reqwest a custom DNS resolver (rather than
-    // `.hickory_dns(true)`) so we control the config: pure Cloudflare
-    // 1.1.1.1 nameservers, empty search domain list, zero cache.
-    // Reqwest's built-in hickory integration inherits the system
-    // resolv.conf, which on laptops often contains a local search
-    // suffix (e.g. the wifi name) that corrupts lookups of fully
-    // qualified public names into `host.suffix.`.
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .dns_resolver(std::sync::Arc::new(CloudflareDnsResolver::new()))
-        .user_agent("aex-control-plane/1.2.0-alpha.3")
-        .build()
-        .map_err(|e| {
-            ApiError::Internal(Box::new(crate::error::SimpleError(format!(
-                "reqwest build: {e}"
-            ))))
-        })?;
+    // The AEX DoH resolver + TLS + user-agent are supplied by `aex-net`.
+    // See `aex_net::build_http_client_with_timeout` for the full rationale;
+    // the short version is that reqwest's built-in hickory integration
+    // reads `/etc/resolv.conf`, which on laptops often contains a local
+    // search suffix (e.g. the wifi name) that corrupts lookups of public
+    // hostnames into `host.suffix.`.
+    let client = aex_net::build_http_client_with_timeout(
+        "control-plane",
+        std::time::Duration::from_secs(10),
+    )
+    .map_err(|e| {
+        ApiError::Internal(Box::new(crate::error::SimpleError(format!(
+            "aex-net http client build: {e}"
+        ))))
+    })?;
 
     // Widen retry budget: a Cloudflare quick-tunnel may answer DNS+TCP
     // a few seconds before its HTTP layer is fully wired, especially
@@ -947,53 +945,4 @@ fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
         current = src.source();
     }
     out
-}
-
-/// DNS resolver for reqwest that:
-/// - uses Cloudflare's public nameservers (1.1.1.1) over UDP,
-/// - carries an empty search domain list (so it never appends a local
-///   `.wifiname` suffix the way a laptop's system resolver would), and
-/// - caches nothing (so a retry after DNS propagation immediately sees
-///   the updated record).
-#[derive(Clone)]
-struct CloudflareDnsResolver {
-    inner: std::sync::Arc<hickory_resolver::TokioAsyncResolver>,
-}
-
-impl CloudflareDnsResolver {
-    fn new() -> Self {
-        use hickory_resolver::config::{ResolverConfig, ResolverOpts};
-        let mut opts = ResolverOpts::default();
-        opts.cache_size = 0;
-        // Defensive: force ndots high so a short hostname never falls
-        // into any accidental default search path.
-        opts.ndots = 1;
-        let inner = hickory_resolver::TokioAsyncResolver::tokio(ResolverConfig::cloudflare(), opts);
-        Self {
-            inner: std::sync::Arc::new(inner),
-        }
-    }
-}
-
-impl reqwest::dns::Resolve for CloudflareDnsResolver {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let resolver = self.inner.clone();
-        Box::pin(async move {
-            let hostname = name.as_str().to_string();
-            let lookup = resolver
-                .lookup_ip(hostname.as_str())
-                .await
-                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
-            // Materialise into an owned Vec so the iterator doesn't
-            // borrow from `lookup` (which is dropped at the end of the
-            // closure).
-            let addrs: Vec<std::net::SocketAddr> = lookup
-                .iter()
-                .map(|ip| std::net::SocketAddr::new(ip, 0))
-                .collect();
-            let iter: Box<dyn Iterator<Item = std::net::SocketAddr> + Send> =
-                Box::new(addrs.into_iter());
-            Ok(iter)
-        })
-    }
 }

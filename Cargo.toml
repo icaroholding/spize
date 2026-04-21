@@ -10,6 +10,7 @@ members = [
     "crates/aex-tunnel",
     "crates/aex-billing",
     "crates/aex-data-plane",
+    "crates/aex-net",
 ]
 
 [workspace.package]
@@ -59,3 +60,8 @@ time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"
 # Futures + regex
 futures = "0.3"
 regex = "1"
+
+# Network (shared by aex-net, aex-control-plane, aex-data-plane)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+hickory-resolver = { version = "0.24", default-features = false, features = ["tokio-runtime"] }
+url = "2"

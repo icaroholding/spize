@@ -19,6 +19,7 @@ aex-core = { path = "../aex-core", version = "=1.2.0-alpha.3" }
 aex-audit = { path = "../aex-audit", version = "=1.2.0-alpha.3" }
 aex-scanner = { path = "../aex-scanner", version = "=1.2.0-alpha.3" }
 aex-policy = { path = "../aex-policy", version = "=1.2.0-alpha.3" }
+aex-net = { path = "../aex-net", version = "=1.2.0-alpha.3" }
 
 rand.workspace = true
 
@@ -54,19 +55,8 @@ uuid = { workspace = true }
 
 # HTTP client — used to validate the reachability of a sender's
 # tunnel_url in the M2 `send_via_tunnel` flow before issuing tickets.
-# We pair it with a hand-built hickory resolver (below) and inject it
-# via `ClientBuilder::dns_resolver`, because reqwest's own `hickory-dns`
-# feature reads the OS resolv.conf and picks up local search suffixes
-# (e.g. a laptop's wifi name) that corrupt lookups of public hostnames.
-reqwest = { version = "0.12", default-features = false, features = [
-    "rustls-tls",
-] }
-
-# Custom DNS resolver configured to talk to Cloudflare 1.1.1.1 only,
-# no search domains, no caching.
-hickory-resolver = { version = "0.24", default-features = false, features = [
-    "tokio-runtime",
-] }
+# The AEX DoH resolver + TLS config are supplied by `aex-net`.
+reqwest = { workspace = true }
 
 [dev-dependencies]
 rand.workspace = true

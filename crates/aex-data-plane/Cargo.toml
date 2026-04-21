@@ -48,17 +48,16 @@ tracing-subscriber.workspace = true
 time = { workspace = true }
 
 # URL parsing for the binary's readiness check.
-url = "2"
+url = { workspace = true }
 
 # Direct DNS resolver (queries 1.1.1.1 / 8.8.8.8 rather than the OS
 # resolver) used by the binary's readiness check. Bypasses macOS's
 # mDNSResponder which caches NXDOMAIN for ~60s and would otherwise
 # poison retries when a freshly-created Cloudflare quick-tunnel URL
 # hasn't landed in public DNS yet at the time of the first lookup.
-hickory-resolver = { version = "0.24", default-features = false, features = [
-    "tokio-runtime",
-    "system-config",
-] }
+# `system-config` is NOT enabled here by design: we want hickory to
+# ignore /etc/resolv.conf and talk to Cloudflare directly.
+hickory-resolver = { workspace = true }
 
 [dev-dependencies]
 rand.workspace = true
