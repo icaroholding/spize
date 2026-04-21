@@ -65,3 +65,6 @@ regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 hickory-resolver = { version = "0.24", default-features = false, features = ["tokio-runtime"] }
 url = "2"
+
+# Iroh P2P transport (pinned per ADR-0015; bumps require a new ADR).
+iroh = "=0.96.0"
