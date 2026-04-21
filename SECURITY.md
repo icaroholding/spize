@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Please email **info@micheletrani.com** with the subject line `SAP security report`.
+Please email **info@micheletrani.com** with the subject line `AEX security report`.
 Include a short reproduction, the commit hash, and your contact. We aim to
 acknowledge within 72 hours.
 
@@ -77,6 +77,5 @@ the control plane with a review proxy.
 
 ## Known limitations
 
-See [CSO audit report](./docs/audit-findings.md) if generated via `/cso`,
 or the "Remediation priority" section from the most recent run. Open
 items live in `TODOS.md` (to be added) with `security` labels.

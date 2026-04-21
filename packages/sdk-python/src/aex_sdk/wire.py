@@ -1,7 +1,7 @@
 """Canonical wire-format functions.
 
 These MUST produce byte-for-byte identical output to the corresponding
-Rust functions in ``spize_core::wire``. The test suite in
+Rust functions in ``aex_core::wire``. The test suite in
 ``tests/test_wire.py`` checks this against the golden vectors exported
 from the Rust tests — DO NOT modify without updating both sides
 together.

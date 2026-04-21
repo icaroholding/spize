@@ -61,7 +61,7 @@ export default function WaitlistPage() {
             within 5 business days. In the meantime, the Python SDK and
             self-hosted control plane are already usable — see the
             <a
-              href="https://github.com/icaroholding/olotransfer/tree/master/packages/sdk-python"
+              href="https://github.com/icaroholding/spize/tree/master/packages/sdk-python"
               className="underline underline-offset-2 ml-1"
             >
               repo
