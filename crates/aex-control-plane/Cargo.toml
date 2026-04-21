@@ -15,10 +15,10 @@ name = "aex-control-plane"
 path = "src/main.rs"
 
 [dependencies]
-aex-core = { path = "../aex-core" }
-aex-audit = { path = "../aex-audit" }
-aex-scanner = { path = "../aex-scanner" }
-aex-policy = { path = "../aex-policy" }
+aex-core = { path = "../aex-core", version = "=1.2.0-alpha.1" }
+aex-audit = { path = "../aex-audit", version = "=1.2.0-alpha.1" }
+aex-scanner = { path = "../aex-scanner", version = "=1.2.0-alpha.1" }
+aex-policy = { path = "../aex-policy", version = "=1.2.0-alpha.1" }
 
 rand.workspace = true
 

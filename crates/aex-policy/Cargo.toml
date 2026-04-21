@@ -7,8 +7,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-aex-core = { path = "../aex-core" }
-aex-scanner = { path = "../aex-scanner" }
+aex-core = { path = "../aex-core", version = "=1.2.0-alpha.1" }
+aex-scanner = { path = "../aex-scanner", version = "=1.2.0-alpha.1" }
 
 async-trait.workspace = true
 serde = { workspace = true }
