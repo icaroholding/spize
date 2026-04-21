@@ -23,7 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing();
 
     let cfg = Config::from_env()?;
-    tracing::info!(bind = %cfg.bind_addr, "spize-control-plane starting");
+    tracing::info!(bind = %cfg.bind_addr, "aex-control-plane starting");
 
     let db = PgPoolOptions::new()
         .max_connections(16)
