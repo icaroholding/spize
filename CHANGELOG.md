@@ -2,14 +2,67 @@
 
 All notable changes are recorded here. Versioning follows [semver](https://semver.org).
 
-## Unreleased
+## Unreleased — targeting `v1.3.0-beta.1`
 
-Planned for v1.2.0 stable:
-- Admin dashboard: M2 transfer visualization
-- Hosted service beta at spize.io
-- Cedar DSL in `aex-policy`
-- Real Rekor HTTP submitter (non-stub)
-- Real Stripe HTTP calls in `aex-billing`
+Sprint 1.5 scope: `aex-net` crate + SDK DoH parity + protocol §5
+normative spec + 37 ADRs + two data-plane CLI delights. Wire format
+stays v1 in this sprint; breaking `reachable_at[]` migration and
+Iroh first-class transport land in Sprint 2 with the `v1.3.0-beta.1`
+tag.
+
+### Added
+- `aex-net` crate — shared DNS-over-HTTPS resolver, HTTP client
+  factory (`build_http_client(component)` + `_with_timeout`), normative
+  retry policy, and captive-portal detection via three standard probe
+  endpoints. Single home for the network-layer quirks the four Sprint 1
+  DNS commits (search-domain suffix, NXDOMAIN cache, UDP/53
+  interception, DoH fallback) were hitting.
+- Python SDK `aex_sdk.resolver` / `aex_sdk.retry` / `aex_sdk.captive`.
+  `SpizeClient` accepts a `resolver=` kwarg; `fetch_from_tunnel` plus
+  the new `upload_blob_admin` helper route through a DoH transport
+  (dnspython over HTTP/2, Cloudflare 1.1.1.1 bootstrap pinned).
+- TypeScript SDK `resolver.ts` / `retry.ts` / `captive.ts`.
+  `SpizeClient` accepts a `resolver` option; tangerine-backed DoH via
+  an `undici.Agent` with `connect.lookup`. Node.js only; browser
+  builds pass the platform `fetch` through unchanged.
+- `docs/protocol-v1.md` §5 "Normative network behaviour": §5.1 retry
+  policy (3 attempts, 1 s base, 2× multiplier, ±100 ms jitter), §5.3
+  captive-portal detection (Apple / Google / MS NCSI probes, consensus
+  rules, stdout token set). Conformance test at
+  `crates/aex-net/tests/conformance/` pins the Rust side values.
+- `docs/decisions/`: 37 ADRs transcribed from the 2026-04-21 "Network
+  Sovereignty" plan review — strategic Q1-Q10, architecture, security,
+  tests, observability, deployment, and long-term items.
+- `aex-data-plane` CLI: `--help`, `--version`, `--version --verbose`
+  (Delight #6; dumps compiled transports + DNS config + repo URL).
+- `aex-data-plane` stdout: `AEX_NETWORK_STATE=<direct|captive_portal|
+  limited|unknown>` emitted at startup after the §5.3 probe consensus
+  (Delight #5). Advisory only — orchestrators surface it to operators,
+  never gate execution.
+- `TODOS.md` at repo root tracking follow-ups deferred from the
+  Sprint 1.5 plan-eng-review (`verify_tunnel_reachable` extraction,
+  retry-loop centralisation, chaos-testbed captive-portal scenario).
+
+### Changed
+- `aex-control-plane/src/routes/transfers.rs` drops its inline 48-LOC
+  `CloudflareDnsResolver` struct and consumes
+  `aex_net::build_http_client_with_timeout` instead. Behaviour
+  identical.
+- `hickory-resolver`, `reqwest`, `url` promoted to
+  `[workspace.dependencies]`; individual crates reference
+  `{ workspace = true }`.
+- `demo_two_agents_cloudflare.py` no longer shells out to `curl
+  --resolve` or `dig`. All HTTP goes through `SpizeClient` +
+  `DoHTransport`. Verified 8/8 on a wifi network with a
+  search-domain suffix — the exact failure mode Sprint 1 spent four
+  commits fighting.
+
+### Fixed
+- dnspython 2.6+ defaults DoH to HTTP/3, which raises `NoDOH` when
+  `aioquic` isn't installed. Pinned to HTTP/2 + required
+  `httpx[http2]>=0.27` extra. Also set `bootstrap_address="1.1.1.1"`
+  so the DoH endpoint itself resolves via Cloudflare anycast rather
+  than the OS resolver.
 
 ## [1.2.0-alpha.3] — in progress
 

@@ -52,11 +52,19 @@ class CloudflareDoHResolver:
         # dependency isn't installed. AEX does not require HTTP/3 for
         # DoH — any stack with TLS will do — so we pin H2 to keep the
         # dependency surface small.
+        #
+        # `bootstrap_address="1.1.1.1"` is defence-in-depth: without it,
+        # dnspython resolves the DoH endpoint hostname via the OS
+        # resolver, which is the exact failure mode we're working
+        # around for tunnel hostnames. With it, the DoH endpoint
+        # resolves through Cloudflare's well-known anycast IP,
+        # independent of system DNS.
         response = dns.query.https(
             query,
             self._doh_url,
             timeout=self._timeout,
             http_version=dns.query.HTTPVersion.H2,
+            bootstrap_address="1.1.1.1",
         )
         for rrset in response.answer:
             for rdata in rrset:
