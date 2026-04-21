@@ -21,6 +21,8 @@
 //!    action = `ack`. State moves to `delivered`, audit entry with the
 //!    signed receipt.
 
+#![allow(clippy::too_many_arguments)]
+
 use axum::{
     extract::{DefaultBodyLimit, Path, State},
     http::StatusCode,

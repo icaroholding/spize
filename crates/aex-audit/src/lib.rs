@@ -48,6 +48,7 @@ use async_trait::async_trait;
 /// Implementations must be internally synchronized — concurrent callers
 /// must see a serialized view of the chain. No external locking required.
 #[async_trait]
+#[allow(clippy::len_without_is_empty)]
 pub trait AuditLog: Send + Sync {
     /// Append an event to the log. Returns a receipt the caller can keep
     /// as proof the event is recorded (contains event id + chain head at

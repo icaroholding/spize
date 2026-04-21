@@ -1,3 +1,5 @@
+#![allow(clippy::len_without_is_empty)]
+
 //! EtereCitizen identity provider.
 //!
 //! `did:ethr:<chainId>:<address>` identities backed by an Ethereum-style
