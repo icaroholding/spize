@@ -47,9 +47,8 @@ tracing-subscriber.workspace = true
 # Time
 time = { workspace = true }
 
-# HTTP client (used by the binary to self-verify the tunnel before
-# declaring AEX_READY=1). Rustls-only to avoid OpenSSL dependency.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# URL parsing for the binary's readiness check.
+url = "2"
 
 [dev-dependencies]
 rand.workspace = true

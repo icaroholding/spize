@@ -27,15 +27,21 @@
 //! AEX_READY=1
 //! ```
 //!
-//! on stdout before treating the data plane as usable. `AEX_READY=1` is
-//! only emitted after the binary has successfully round-tripped a
-//! `GET /healthz` request through its own tunnel — proving that the
-//! public URL's DNS record has propagated AND that the Cloudflare edge
-//! routes traffic back to this process. Skipping this wait is the
-//! cause of the "nodename not known" class of bugs.
+//! on stdout before treating the data plane as usable. `AEX_READY=1`
+//! is only emitted after the binary has verified locally that:
 //!
-//! If the self-roundtrip fails within the startup timeout the binary
-//! exits non-zero; it never publishes a half-ready URL.
+//! 1. DNS for the tunnel's hostname resolves publicly — proves the
+//!    Cloudflare edge has actually published the quick-tunnel record.
+//! 2. A TCP connection to `:443` on one of the resolved addresses
+//!    succeeds — proves the edge is accepting connections for this
+//!    tunnel.
+//!
+//! The binary intentionally does NOT do a full HTTP round-trip against
+//! its own tunnel: doing so is surprisingly brittle (TLS client quirks,
+//! DNS cache layering), and it is the control plane's job, not the
+//! data plane's, to prove end-to-end HTTP reachability before issuing
+//! tickets against a tunnel_url. See `aex-control-plane` for that
+//! check.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -112,12 +118,11 @@ struct AdminInsertQuery {
     filename: Option<String>,
 }
 
-/// Upper bound for the public tunnel to become reachable from the
-/// outside world after `cloudflared` reports "connected". Cloudflare
-/// quick tunnels typically land in DNS within 5-30s; we allow extra
-/// headroom for slow networks. Negotiable per-deployment via
+/// Upper bound for the tunnel's DNS record to appear in public DNS
+/// after `cloudflared` reports "connected". Typical observed time is
+/// 5-30s; we allow headroom for slow networks. Negotiable via
 /// `AEX_READINESS_TIMEOUT_SECS`.
-const DEFAULT_READINESS_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_READINESS_TIMEOUT_SECS: u64 = 60;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -206,49 +211,74 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-/// Poll `GET <public_url>/healthz` from outside until we get a 200 or
-/// the overall `timeout` elapses. Uses a fresh `reqwest::Client` per
-/// attempt so a pooled "nodename not known" doesn't stick across
-/// retries. Logs each failure at debug so operators can diagnose slow
-/// DNS without spamming info.
+/// Wait until the tunnel's hostname resolves publicly AND TCP:443
+/// accepts a connection on at least one resolved address. Deliberately
+/// avoids HTTP/TLS so this is not coupled to any one client library's
+/// quirks — the HTTP-level healthcheck lives in the control plane.
 async fn verify_tunnel_reachable(
     public_url: &str,
     timeout_secs: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let healthz = format!("{}/healthz", public_url.trim_end_matches('/'));
+    let parsed = url::Url::parse(public_url)?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| format!("public URL {public_url} has no host component"))?
+        .to_string();
+    let port = parsed.port().unwrap_or(443);
+    let target = format!("{host}:{port}");
+
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     let mut attempt: u32 = 0;
     let mut last_err: String = "no attempts made".into();
 
     while tokio::time::Instant::now() < deadline {
         attempt += 1;
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .pool_idle_timeout(std::time::Duration::from_secs(0))
-            .build()?;
-        match client.get(&healthz).send().await {
-            Ok(r) if r.status().is_success() => {
-                tracing::info!(attempt, url = %healthz, "self-roundtrip OK");
+
+        // Step 1: resolve DNS. lookup_host returns all A/AAAA records.
+        let addrs = match tokio::net::lookup_host(&target).await {
+            Ok(iter) => iter.collect::<Vec<_>>(),
+            Err(e) => {
+                last_err = format!("dns: {e}");
+                tracing::debug!(attempt, err = %last_err, "tunnel readiness: DNS not resolving");
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                continue;
+            }
+        };
+        if addrs.is_empty() {
+            last_err = "dns: empty address list".into();
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            continue;
+        }
+
+        // Step 2: TCP connect on the first resolved address. Succeeds
+        // the moment the Cloudflare edge accepts SYN for this tunnel.
+        let addr = addrs[0];
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio::net::TcpStream::connect(addr),
+        )
+        .await
+        {
+            Ok(Ok(_stream)) => {
+                tracing::info!(attempt, %target, %addr, "tunnel reachable (DNS + TCP)");
                 return Ok(());
             }
-            Ok(r) => {
-                last_err = format!("status {}", r.status());
+            Ok(Err(e)) => {
+                last_err = format!("tcp connect {addr}: {e}");
             }
-            Err(e) => {
-                last_err = e.to_string();
+            Err(_) => {
+                last_err = format!("tcp connect {addr}: 5s timeout");
             }
         }
-        tracing::debug!(attempt, err = %last_err, "self-roundtrip not ready");
-        // Fixed 2s cadence — DNS propagation doesn't benefit from
-        // exponential backoff and we want consistent progress.
+        tracing::debug!(attempt, err = %last_err, "tunnel readiness: TCP not accepting");
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 
     Err(format!(
-        "self-roundtrip to {healthz} never succeeded within {timeout_secs}s after {attempt} \
-         attempts (last error: {last_err}). This usually means (a) the Cloudflare quick-tunnel \
-         URL never propagated into public DNS — check `cloudflared` logs, or (b) this process \
-         is behind something that blocks outbound HTTPS to Cloudflare."
+        "tunnel {public_url} did not pass DNS+TCP readiness within {timeout_secs}s \
+         after {attempt} attempts (last error: {last_err}). Either the Cloudflare \
+         quick-tunnel record never propagated into public DNS, or this host cannot \
+         reach the Cloudflare edge on port 443."
     )
     .into())
 }

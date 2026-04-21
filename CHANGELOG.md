@@ -23,7 +23,8 @@ Sprint 1 scope: close M2 end-to-end, wire release automation, correct domain ref
 - `transferReceiptBytes` in TS wire layer now accepts the `request_ticket` action (was already present in Rust + Python)
 - npm workspaces root so `@aexproto/mcp-server` picks up `@aexproto/sdk` locally during development
 - `examples/demo_two_agents_cloudflare.py` — first end-to-end demo with real Cloudflare tunnel
-- **Readiness invariant** in `aex-data-plane` binary: emits `AEX_DATA_PLANE_URL=…` + `AEX_READY=1` on stdout only after a successful self-roundtrip through its own tunnel (DNS + Cloudflare edge + process). Orchestrators wait for `AEX_READY=1`; client-side reachability polls are no longer needed. Timeout configurable via `AEX_READINESS_TIMEOUT_SECS` (default 120s). Documented in the binary's module-level docs as a conformance requirement.
+- **Readiness invariant** in `aex-data-plane` binary: emits `AEX_DATA_PLANE_URL=…` + `AEX_READY=1` on stdout only after the tunnel's hostname resolves in public DNS AND TCP:443 accepts a connection on a resolved address. Deliberately avoids an HTTP self-roundtrip — a binary fetching its own tunnel URL is surprisingly brittle (TLS client quirks, same-host timing races with the tunnel forwarder) and that end-to-end check belongs in the control plane instead. Timeout configurable via `AEX_READINESS_TIMEOUT_SECS` (default 60s).
+- **Tunnel reachability validation** in `aex-control-plane` on the M2 `send_via_tunnel` branch: before persisting the transfer, the control plane does `GET <tunnel_url>/healthz` with 3 retries (3s spacing). Requests pointing at an unreachable tunnel are rejected as 400 before the nonce is consumed. Skippable with `AEX_SKIP_TUNNEL_VALIDATION=1` for tests.
 
 ### Changed
 - Domain references corrected from `spize.ai` to `spize.io` across README, CHANGELOG, package manifests, wire-format test fixtures, env example, code of conduct

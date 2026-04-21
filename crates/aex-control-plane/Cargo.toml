@@ -52,6 +52,10 @@ sha2.workspace = true
 time = { workspace = true }
 uuid = { workspace = true }
 
+# HTTP client — used to validate the reachability of a sender's
+# tunnel_url in the M2 `send_via_tunnel` flow before issuing tickets.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
 [dev-dependencies]
 rand.workspace = true
 tower = { workspace = true, features = ["util"] }

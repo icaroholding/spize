@@ -165,6 +165,17 @@ async fn create_transfer(
             ));
         }
 
+        // Verify tunnel reachability from the control plane's perspective
+        // BEFORE persisting the transfer. Without this check, a malicious
+        // or misconfigured sender could announce a tunnel_url that does
+        // not actually serve anything, leaving the recipient to fail at
+        // ticket-fetch time. This is the HTTP-level half of the readiness
+        // contract; the data-plane binary already did DNS+TCP on its own
+        // end. Skippable via AEX_SKIP_TUNNEL_VALIDATION=1 for tests.
+        if std::env::var("AEX_SKIP_TUNNEL_VALIDATION").ok().as_deref() != Some("1") {
+            verify_tunnel_http_healthz(tunnel_url).await?;
+        }
+
         // Verify sender intent signature — same canonical bytes as M1, just
         // without the blob present.
         let canonical = transfer_intent_bytes(
@@ -862,4 +873,51 @@ pub async fn issue_ticket(
         nonce: ticket_nonce,
         signature: hex::encode(&ticket_sig),
     }))
+}
+
+/// HTTP-level healthcheck of the sender's tunnel_url. Runs during
+/// `create_transfer` on the M2 branch — before we persist the transfer,
+/// before we consume the intent nonce, before we hand the recipient a
+/// ticket pointing at a URL that doesn't serve anything.
+///
+/// Three attempts with 3s spacing. Total worst case ~40s (3 × 10s
+/// request timeout + 2 × 3s sleep). The control plane is on a
+/// different host than the sender's data plane, so this is a clean
+/// "client→edge→tunnel→target" path with none of the same-host loop
+/// complications that affect a binary trying to GET its own URL.
+async fn verify_tunnel_http_healthz(tunnel_url: &str) -> Result<(), ApiError> {
+    let healthz = format!("{}/healthz", tunnel_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| {
+            ApiError::Internal(Box::new(crate::error::SimpleError(format!(
+                "reqwest build: {e}"
+            ))))
+        })?;
+
+    let mut last_err = String::new();
+    for attempt in 1..=3 {
+        match client.get(&healthz).send().await {
+            Ok(r) if r.status().is_success() => {
+                tracing::debug!(attempt, %healthz, "tunnel healthz OK");
+                return Ok(());
+            }
+            Ok(r) => {
+                last_err = format!("status {}", r.status());
+            }
+            Err(e) => {
+                last_err = e.to_string();
+            }
+        }
+        tracing::debug!(attempt, err = %last_err, "tunnel healthz not ready");
+        if attempt < 3 {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        }
+    }
+
+    Err(ApiError::BadRequest(format!(
+        "tunnel_url {tunnel_url} did not respond 200 on /healthz after 3 attempts (last: {last_err}). \
+         Ensure the data plane is running and AEX_READY=1 has been emitted before calling send_via_tunnel."
+    )))
 }
