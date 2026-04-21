@@ -60,7 +60,9 @@ def main() -> int:
 
     admin_token = secrets.token_urlsafe(32)
     data_plane, data_plane_url = start_data_plane(cp_pubkey, admin_token)
-    print(f"[1/8] data plane up at {data_plane_url}")
+    print(f"[1/8] data plane subprocess up, URL = {data_plane_url}")
+    wait_for_reachable(data_plane_url, timeout=30.0)
+    print(f"[1/8] tunnel DNS resolved, data plane reachable over the internet")
 
     alice_id = Identity.generate(org="demo", name=f"alice{int(time.time())}")
     bob_id = Identity.generate(org="demo", name=f"bob{int(time.time())}")
@@ -192,6 +194,31 @@ def start_data_plane(cp_pubkey: str, admin_token: str) -> tuple[subprocess.Popen
         raise RuntimeError("data plane did not report its URL within 120s")
 
     return proc, url
+
+
+def wait_for_reachable(url: str, timeout: float) -> None:
+    """Poll GET {url}/healthz until it returns 200 or we give up.
+
+    Cloudflare quick tunnels emit the public URL as soon as the edge
+    connection is established, but the DNS record for
+    *.trycloudflare.com typically needs another 5-10 seconds to
+    propagate. Without this wait, the first httpx.post against the URL
+    fails with "nodename nor servname provided, or not known".
+    """
+    deadline = time.time() + timeout
+    last_err: Exception | None = None
+    while time.time() < deadline:
+        try:
+            r = httpx.get(f"{url}/healthz", timeout=3.0)
+            if r.status_code == 200:
+                return
+        except Exception as e:
+            last_err = e
+        time.sleep(1.0)
+    raise RuntimeError(
+        f"data plane at {url} not reachable within {timeout}s; "
+        f"last error: {last_err!r}"
+    )
 
 
 def upload_to_data_plane(
