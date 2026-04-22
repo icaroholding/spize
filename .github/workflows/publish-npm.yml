@@ -5,6 +5,12 @@ on:
     tags:
       - 'v*'
 
+# Prerequisites:
+# - `NPM_TOKEN` secret must be an **Automation** token (not Granular /
+#   Classic Publish). Classic tokens from accounts with 2FA require an
+#   OTP at publish time and will fail with EOTP in CI. Rotate via
+#   https://www.npmjs.com/settings/{user}/tokens → Generate → Automation.
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -18,13 +24,41 @@ jobs:
         run: npm install
       - name: Build all packages
         run: npm run build
+      - name: Derive npm dist-tag from git tag
+        id: disttag
+        # Map `v1.3.0-beta.1` → `beta`; `v1.2.0-alpha.3` → `alpha`;
+        # `v1.4.0-rc.2` → `rc`; `v1.3.0` → `latest`.
+        # Prereleases MUST NOT land in the `latest` channel — `npm
+        # install @aexproto/sdk` has to keep resolving to the most
+        # recent stable, not to whatever beta just shipped. Since
+        # `npm@11` this is enforced client-side: publishing a
+        # prerelease without an explicit `--tag` fails with
+        # `ETARGET` / `must specify a tag`.
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          case "$version" in
+            *-alpha*) tag=alpha ;;
+            *-beta*)  tag=beta ;;
+            *-rc*)    tag=rc ;;
+            *)        tag=latest ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Resolved dist-tag: $tag (from $GITHUB_REF_NAME)"
       - name: Publish @aexproto/sdk
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --workspace=packages/sdk-typescript --access public
+        run: >
+          npm publish
+          --workspace=packages/sdk-typescript
+          --access public
+          --tag ${{ steps.disttag.outputs.tag }}
       - name: Wait for npm index
         run: sleep 30
       - name: Publish @aexproto/mcp-server
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --workspace=packages/mcp-server --access public
+        run: >
+          npm publish
+          --workspace=packages/mcp-server
+          --access public
+          --tag ${{ steps.disttag.outputs.tag }}
