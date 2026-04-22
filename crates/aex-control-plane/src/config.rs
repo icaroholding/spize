@@ -40,6 +40,11 @@ pub struct Config {
     /// Comma-separated list of browser origins permitted to call the
     /// control plane. Empty = same-origin only (default). `*` for dev.
     pub cors_allowed_origins: Vec<String>,
+    /// Shared-secret bearer token gating `/v1/admin/*` endpoints
+    /// (API key management, usage queries, …). When `None`, admin
+    /// endpoints return 503 with a clear message — we don't want
+    /// silent 404s on a forgotten deploy secret.
+    pub admin_token: Option<String>,
 }
 
 impl Config {
@@ -85,6 +90,28 @@ impl Config {
             .filter(|s| !s.is_empty())
             .collect();
 
+        // Minimum entropy: reject obviously-short tokens so a fat
+        // finger in a `fly secrets set` doesn't deploy a 4-byte
+        // admin password. 32 chars matches the shape of a generated
+        // `openssl rand -hex 16` secret.
+        const MIN_ADMIN_TOKEN_LEN: usize = 32;
+        let admin_token = match env::var("AEX_ADMIN_TOKEN") {
+            Ok(v) if v.len() >= MIN_ADMIN_TOKEN_LEN => Some(v),
+            Ok(v) if v.is_empty() => None,
+            Ok(v) => {
+                return Err(ConfigError::Invalid {
+                    name: "AEX_ADMIN_TOKEN",
+                    msg: format!(
+                        "must be at least {} chars; got {} — generate with \
+                         `openssl rand -hex 16`",
+                        MIN_ADMIN_TOKEN_LEN,
+                        v.len()
+                    ),
+                });
+            }
+            Err(_) => None,
+        };
+
         Ok(Self {
             database_url,
             bind_addr,
@@ -93,6 +120,7 @@ impl Config {
             signing_key_path,
             max_transfer_bytes,
             cors_allowed_origins,
+            admin_token,
         })
     }
 }

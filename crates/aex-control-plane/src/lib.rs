@@ -52,6 +52,10 @@ pub struct AppState {
     pub endpoint_validator: EndpointValidator,
     pub clock: Arc<dyn Clock>,
     pub metrics: Metrics,
+    /// Shared-secret bearer token gating `/v1/admin/*`. When `None`,
+    /// the admin middleware returns 503 on every admin request — see
+    /// `routes::admin::require_admin_token`.
+    pub admin_token: Option<String>,
 }
 
 impl AppState {
@@ -72,7 +76,17 @@ impl AppState {
             endpoint_validator: EndpointValidator::with_defaults(),
             clock: Arc::new(SystemClock::new()),
             metrics: Metrics::new(),
+            admin_token: None,
         }
+    }
+
+    /// Set the shared-secret bearer token gating `/v1/admin/*`. Test
+    /// harnesses call this to exercise the admin middleware against
+    /// a known token; production wiring plumbs the value from
+    /// `Config::admin_token`.
+    pub fn with_admin_token(mut self, token: impl Into<String>) -> Self {
+        self.admin_token = Some(token.into());
+        self
     }
 
     pub fn with_signer(mut self, signer: Arc<signer::ControlPlaneSigner>) -> Self {
@@ -134,7 +148,7 @@ pub fn build_app_with_cors(state: AppState, cors_origins: &[String]) -> Router {
     Router::new()
         .merge(routes::health::router())
         .merge(routes::metrics::router())
-        .nest("/v1", routes::v1_router())
+        .nest("/v1", routes::v1_router(state.clone()))
         .layer(RequestBodyLimitLayer::new(MAX_UPLOAD_BODY_BYTES))
         .layer(build_cors_layer(cors_origins))
         .layer(TraceLayer::new_for_http())

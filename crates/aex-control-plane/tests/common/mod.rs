@@ -38,6 +38,16 @@ impl TestEnv {
     }
 
     pub fn with_tier(pool: PgPool, tier: TierName) -> Self {
+        Self::with_state_override(pool, tier, |s| s)
+    }
+
+    /// Construct a TestEnv with a caller-supplied transform on the
+    /// AppState — used by tests that need to attach an admin token,
+    /// swap the Clock, or otherwise deviate from the default wiring.
+    pub fn with_state_override<F>(pool: PgPool, tier: TierName, f: F) -> Self
+    where
+        F: FnOnce(AppState) -> AppState,
+    {
         let scanner = ScanPipeline::new()
             .with_scanner(Arc::new(SizeLimitScanner::new(50 * 1024 * 1024)))
             .with_scanner(Arc::new(MagicByteScanner::new()))
@@ -50,6 +60,7 @@ impl TestEnv {
             Arc::new(MemoryAuditLog::new()),
             Arc::new(MemoryBlobStore::new()),
         );
+        let state = f(state);
         Self {
             app: build_app(state),
         }
@@ -81,6 +92,18 @@ impl TestEnv {
         let req = Request::builder()
             .method("GET")
             .uri(path)
+            .body(Body::empty())
+            .unwrap();
+        self.request(req).await
+    }
+
+    /// GET a path with a caller-supplied `Authorization` header.
+    /// Used by admin-auth tests.
+    pub async fn get_with_auth(&self, path: &str, authorization: &str) -> (StatusCode, Value) {
+        let req = Request::builder()
+            .method("GET")
+            .uri(path)
+            .header("authorization", authorization)
             .body(Body::empty())
             .unwrap();
         self.request(req).await
