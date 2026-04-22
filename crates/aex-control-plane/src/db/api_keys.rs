@@ -12,7 +12,7 @@
 //! - Tier is free-text at the DB layer; policy code validates.
 
 use sha2::{Digest, Sha256};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 
 /// Row as stored in `api_keys`. The full plaintext is NEVER present
@@ -79,8 +79,26 @@ pub async fn create_returning_plaintext(
     let plaintext = generate_plaintext();
     let hash = hash_plaintext(&plaintext);
     let prefix = prefix_of(&plaintext);
+    let row = insert_row(pool, &hash, &prefix, customer_id, name, tier).await?;
+    Ok(CreatedApiKey { row, plaintext })
+}
 
-    let row = sqlx::query_as::<_, ApiKeyRow>(
+/// Shared INSERT body. `executor` accepts either `&PgPool`
+/// (current admin mint path) or a transaction handle (future
+/// customer-dashboard mint path), keeping the SQL in exactly one
+/// place.
+async fn insert_row<'e, E>(
+    executor: E,
+    hash: &str,
+    prefix: &str,
+    customer_id: &str,
+    name: &str,
+    tier: &str,
+) -> Result<ApiKeyRow, sqlx::Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    sqlx::query_as::<_, ApiKeyRow>(
         r#"
         INSERT INTO api_keys (key_hash, key_prefix, customer_id, name, tier)
         VALUES ($1, $2, $3, $4, $5)
@@ -88,15 +106,13 @@ pub async fn create_returning_plaintext(
                   created_at, last_used_at, revoked_at, usage_count
         "#,
     )
-    .bind(&hash)
-    .bind(&prefix)
+    .bind(hash)
+    .bind(prefix)
     .bind(customer_id)
     .bind(name)
     .bind(tier)
-    .fetch_one(pool)
-    .await?;
-
-    Ok(CreatedApiKey { row, plaintext })
+    .fetch_one(executor)
+    .await
 }
 
 /// List every API key visible to the admin (no per-customer
@@ -167,6 +183,33 @@ pub async fn bump_usage(pool: &PgPool, id: uuid::Uuid) -> Result<(), sqlx::Error
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Revoke every non-revoked api_key for a given customer, inside a
+/// caller-supplied transaction. Returns how many rows were newly
+/// revoked — `0` is a legitimate outcome (customer had no active
+/// keys, or their subscription was cancelled before any key was
+/// minted).
+///
+/// Used by the Stripe webhook's `customer.subscription.deleted`
+/// handler so a cancellation atomically kills every key the
+/// customer held, inside the same transaction as the event-inbox
+/// insert.
+pub async fn revoke_all_by_customer_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    customer_id: &str,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        r#"
+        UPDATE api_keys
+        SET revoked_at = now()
+        WHERE customer_id = $1 AND revoked_at IS NULL
+        "#,
+    )
+    .bind(customer_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 /// Revoke a key by `id`. Returns the updated row. Idempotent — if

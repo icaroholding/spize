@@ -37,6 +37,7 @@ use aex_scanner::ScanPipeline;
 
 use crate::blob::BlobStore;
 use crate::clock::{Clock, SystemClock};
+use crate::config::StripeConfig;
 use crate::endpoint_validator::EndpointValidator;
 use crate::metrics::Metrics;
 
@@ -56,6 +57,11 @@ pub struct AppState {
     /// the admin middleware returns 503 on every admin request — see
     /// `routes::admin::require_admin_token`.
     pub admin_token: Option<String>,
+    /// Stripe webhook config (signing secret + price→tier map).
+    /// When the secret is `None` the webhook handler short-circuits
+    /// with 503 instead of silently 404'ing — same philosophy as
+    /// `admin_token`.
+    pub stripe: StripeConfig,
 }
 
 impl AppState {
@@ -77,6 +83,7 @@ impl AppState {
             clock: Arc::new(SystemClock::new()),
             metrics: Metrics::new(),
             admin_token: None,
+            stripe: StripeConfig::default(),
         }
     }
 
@@ -86,6 +93,15 @@ impl AppState {
     /// `Config::admin_token`.
     pub fn with_admin_token(mut self, token: impl Into<String>) -> Self {
         self.admin_token = Some(token.into());
+        self
+    }
+
+    /// Install Stripe webhook config (secret + price→tier map).
+    /// Tests override this to exercise the webhook against a known
+    /// secret + fake price IDs; production wiring plumbs the value
+    /// from `Config::stripe`.
+    pub fn with_stripe(mut self, stripe: StripeConfig) -> Self {
+        self.stripe = stripe;
         self
     }
 
@@ -149,6 +165,10 @@ pub fn build_app_with_cors(state: AppState, cors_origins: &[String]) -> Router {
         .merge(routes::health::router())
         .merge(routes::metrics::router())
         .nest("/v1", routes::v1_router(state.clone()))
+        // Webhooks live outside /v1 and have no shared auth —
+        // per-provider signature verification happens inside each
+        // handler.
+        .nest("/webhooks", routes::webhooks::router())
         .layer(RequestBodyLimitLayer::new(MAX_UPLOAD_BODY_BYTES))
         .layer(build_cors_layer(cors_origins))
         .layer(TraceLayer::new_for_http())

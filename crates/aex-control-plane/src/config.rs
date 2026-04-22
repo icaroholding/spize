@@ -45,6 +45,39 @@ pub struct Config {
     /// endpoints return 503 with a clear message — we don't want
     /// silent 404s on a forgotten deploy secret.
     pub admin_token: Option<String>,
+    /// Stripe webhook config. When any field is `None` the webhook
+    /// endpoint returns 503 with a pointer at the runbook — same
+    /// philosophy as `admin_token`: fail loud on misconfiguration.
+    pub stripe: StripeConfig,
+}
+
+/// Stripe integration settings. Grouped so it's obvious at call
+/// sites ("the Stripe surface") and so tests can build a coherent
+/// fake without touching unrelated env vars.
+#[derive(Debug, Clone, Default)]
+pub struct StripeConfig {
+    /// Shared webhook signing secret from the Stripe dashboard
+    /// (`whsec_…`). Required to verify that an incoming POST is
+    /// really from Stripe. When `None`, the webhook handler returns
+    /// 503.
+    pub webhook_secret: Option<String>,
+    /// Stripe `price.id` that maps to the `dev` tier (e.g.
+    /// `$29/month` at Sprint 4 launch). When a
+    /// `customer.subscription.*` event references this price, the
+    /// resulting `subscriptions` row is tagged `tier = "dev"` and
+    /// the customer dashboard will hand out `dev`-tier API keys.
+    pub price_dev: Option<String>,
+    /// Same as above for the `team` tier (e.g. `$99/month`).
+    pub price_team: Option<String>,
+}
+
+impl StripeConfig {
+    /// True iff the webhook is fully configured. Handlers short-
+    /// circuit with a 503 when this is false, which happens in dev
+    /// or on a forgotten-secret deploy.
+    pub fn is_ready(&self) -> bool {
+        self.webhook_secret.is_some() && self.price_dev.is_some() && self.price_team.is_some()
+    }
 }
 
 impl Config {
@@ -112,6 +145,23 @@ impl Config {
             Err(_) => None,
         };
 
+        let stripe = StripeConfig {
+            webhook_secret: env::var("STRIPE_WEBHOOK_SECRET")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            price_dev: env::var("STRIPE_PRICE_DEV").ok().filter(|v| !v.is_empty()),
+            price_team: env::var("STRIPE_PRICE_TEAM").ok().filter(|v| !v.is_empty()),
+        };
+        if !stripe.is_ready() {
+            tracing::warn!(
+                webhook_secret = stripe.webhook_secret.is_some(),
+                price_dev = stripe.price_dev.is_some(),
+                price_team = stripe.price_team.is_some(),
+                "Stripe webhook not fully configured; /webhooks/stripe will return 503. \
+                 Set STRIPE_WEBHOOK_SECRET + STRIPE_PRICE_DEV + STRIPE_PRICE_TEAM."
+            );
+        }
+
         Ok(Self {
             database_url,
             bind_addr,
@@ -121,6 +171,7 @@ impl Config {
             max_transfer_bytes,
             cors_allowed_origins,
             admin_token,
+            stripe,
         })
     }
 }
