@@ -68,3 +68,7 @@ url = "2"
 
 # Iroh P2P transport (pinned per ADR-0015; bumps require a new ADR).
 iroh = "=0.96.0"
+
+# Property-based testing (Sprint 3). Dev-only across the workspace;
+# proptest is intentionally NOT in any runtime dependency list.
+proptest = "1"
