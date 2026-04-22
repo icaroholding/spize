@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
 )
+from mnemonic import Mnemonic
 
 from aex_sdk.errors import IdentityError
 
@@ -77,6 +78,60 @@ class Identity:
             format=serialization.PublicFormat.Raw,
         )
         return cls(org=org, name=name, private_key_bytes=private_key_bytes, public_key_bytes=public_bytes)
+
+    @classmethod
+    def generate_with_mnemonic(cls, org: str, name: str) -> "tuple[Identity, str]":
+        """Generate a fresh identity along with a 12-word BIP-39
+        recovery phrase (Sprint 4 Delight).
+
+        The caller is responsible for persisting the phrase somewhere
+        the user can recover it — typically they write it down on
+        paper the first time the Spize Desktop app starts. Losing
+        both the identity file AND the phrase means losing the
+        ``spize:org/name:fingerprint`` permanently; there is no
+        server-side backup.
+
+        Derivation path:
+
+        - Pick 128 bits of CSPRNG entropy.
+        - Encode as a 12-word BIP-39 phrase over the 2048-word
+          English word list.
+        - Derive a 64-byte seed via PBKDF2-HMAC-SHA512 (2048 rounds,
+          empty passphrase) per BIP-39 §2.
+        - Take the first 32 bytes as the Ed25519 secret.
+
+        Returns a ``(Identity, phrase)`` tuple.
+        """
+        _validate_label(org, "org")
+        _validate_label(name, "name")
+        mnemo = Mnemonic("english")
+        phrase = mnemo.generate(strength=128)
+        seed = mnemo.to_seed(phrase, passphrase="")
+        identity = cls.from_secret(org, name, seed[:32])
+        return identity, phrase
+
+    @classmethod
+    def from_mnemonic(cls, org: str, name: str, phrase: str) -> "Identity":
+        """Reconstruct an identity from the 12-word BIP-39 recovery
+        phrase emitted by :meth:`generate_with_mnemonic`.
+
+        The phrase is validated (word count, checksum) before any
+        key material is derived. Any failure raises :class:`
+        IdentityError` — never a silent fallback. If a user typos
+        one word, the checksum catches it; if the whole phrase is
+        garbage, the validator catches it.
+        """
+        _validate_label(org, "org")
+        _validate_label(name, "name")
+        mnemo = Mnemonic("english")
+        normalised = " ".join(phrase.lower().split())
+        if not mnemo.check(normalised):
+            raise IdentityError(
+                "invalid BIP-39 recovery phrase — check word list, spacing, "
+                "and that every word is in the English BIP-39 dictionary"
+            )
+        seed = mnemo.to_seed(normalised, passphrase="")
+        return cls.from_secret(org, name, seed[:32])
 
     # ---------- derived properties ----------
 

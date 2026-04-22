@@ -23,6 +23,10 @@ dependencies = [
     "httpx[http2]>=0.27",
     "cryptography>=42",
     "dnspython>=2.6",
+    # BIP-39 mnemonic support for Identity recovery codes (Sprint 4).
+    # Maintained by Trezor; small pure-Python implementation of the
+    # standard 2048-word list + PBKDF2 seed derivation.
+    "mnemonic>=0.21",
 ]
 
 [project.optional-dependencies]
