@@ -16,6 +16,7 @@ pub mod db;
 pub mod endpoint_validator;
 pub mod error;
 pub mod health_monitor;
+pub mod metrics;
 pub mod routes;
 pub mod signer;
 pub mod verify;
@@ -37,6 +38,7 @@ use aex_scanner::ScanPipeline;
 use crate::blob::BlobStore;
 use crate::clock::{Clock, SystemClock};
 use crate::endpoint_validator::EndpointValidator;
+use crate::metrics::Metrics;
 
 /// Application state shared across all request handlers.
 #[derive(Clone)]
@@ -49,6 +51,7 @@ pub struct AppState {
     pub signer: Option<Arc<signer::ControlPlaneSigner>>,
     pub endpoint_validator: EndpointValidator,
     pub clock: Arc<dyn Clock>,
+    pub metrics: Metrics,
 }
 
 impl AppState {
@@ -68,6 +71,7 @@ impl AppState {
             signer: None,
             endpoint_validator: EndpointValidator::with_defaults(),
             clock: Arc::new(SystemClock::new()),
+            metrics: Metrics::new(),
         }
     }
 
@@ -129,6 +133,7 @@ pub fn build_app(state: AppState) -> Router {
 pub fn build_app_with_cors(state: AppState, cors_origins: &[String]) -> Router {
     Router::new()
         .merge(routes::health::router())
+        .merge(routes::metrics::router())
         .nest("/v1", routes::v1_router())
         .layer(RequestBodyLimitLayer::new(MAX_UPLOAD_BODY_BYTES))
         .layer(build_cors_layer(cors_origins))

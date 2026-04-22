@@ -61,14 +61,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let state = AppState::new(db.clone(), scanner, policy, audit, blobs).with_signer(signer);
+    let metrics_for_monitor = state.metrics.clone();
     let app = build_app_with_cors(state, &cfg.cors_allowed_origins);
 
     // Sprint 3: background endpoint health loop (ADR-0014 + ADR-0021).
     // The monitor owns its own copy of the DB pool + validator so it
     // never contends with axum handlers for permits beyond the
-    // process-wide EndpointValidator semaphore.
+    // process-wide EndpointValidator semaphore. It shares the
+    // AppState metrics registry so `/metrics` sees probe outcomes
+    // and state transitions alongside the HTTP-emitted counters.
     let prober = Arc::new(ValidatorProber::new(EndpointValidator::with_defaults()));
-    let monitor_handle = HealthMonitor::spawn(db, prober, Arc::new(SystemClock::new()));
+    let monitor_handle = HealthMonitor::spawn(
+        db,
+        prober,
+        Arc::new(SystemClock::new()),
+        metrics_for_monitor,
+    );
 
     let listener = TcpListener::bind(cfg.bind_addr).await?;
     tracing::info!(addr = %listener.local_addr()?, "listening");

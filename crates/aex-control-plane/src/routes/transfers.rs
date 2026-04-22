@@ -271,6 +271,12 @@ async fn create_transfer(
         )
         .await?;
 
+        state
+            .metrics
+            .transfers_created_total
+            .with_label_values(&[recipient_kind_str(recipient_kind)])
+            .inc();
+
         return Ok((StatusCode::CREATED, Json(row_to_response(row))));
     }
 
@@ -367,6 +373,12 @@ async fn create_transfer(
             },
         )
         .await?;
+
+        state
+            .metrics
+            .transfers_created_total
+            .with_label_values(&[recipient_kind_str(recipient_kind)])
+            .inc();
 
         return Ok((StatusCode::CREATED, Json(row_to_response(row))));
     }
@@ -569,6 +581,12 @@ async fn create_transfer(
     )
     .await?;
 
+    state
+        .metrics
+        .transfers_created_total
+        .with_label_values(&[recipient_kind_str(recipient_kind)])
+        .inc();
+
     Ok((StatusCode::CREATED, Json(row_to_response(row))))
 }
 
@@ -616,6 +634,21 @@ async fn persist_rejected(
         ),
     )
     .await;
+
+    // Classify the rejection for metrics. Coarse but actionable:
+    // a verdict=None branch means pre-scan policy denied (e.g. tier
+    // limits, recipient shape); verdict=Some means scan happened and
+    // the content itself was flagged (EICAR, regex injection, size).
+    let metric_reason = if verdict.is_some() {
+        "scanner"
+    } else {
+        "policy"
+    };
+    state
+        .metrics
+        .transfers_rejected_total
+        .with_label_values(&[metric_reason])
+        .inc();
 
     Ok(row)
 }
@@ -717,6 +750,8 @@ async fn ack_transfer(
             "transfer is not in a state that can be acked".into(),
         ));
     }
+    state.metrics.transfers_delivered_total.inc();
+
     let receipt = state
         .audit
         .append(Event::new(
