@@ -1,0 +1,68 @@
+# fly.toml — aex-control-plane on Fly.io
+#
+# This file is a TEMPLATE. The operator runs:
+#   fly launch --no-deploy --copy-config=fly.toml --name aex-control-plane --region ams
+# which personalises the file (app name may already be taken; region
+# picked here matches the DERP/TURNS region in the Network Sovereignty
+# plan). See deploy/fly/README.md for the full setup path.
+#
+# The `region = "ams"` default matches ADR-0016: single-region AMS
+# DERP deployment. Co-locating the control plane with the relays
+# keeps inter-service latency single-digit ms.
+
+app = "aex-control-plane"
+primary_region = "ams"
+kill_signal = "SIGTERM"
+kill_timeout = 30  # seconds; matches the health monitor's graceful-shutdown budget
+
+[build]
+  dockerfile = "deploy/fly/Dockerfile"
+
+[env]
+  # JSON logs so Fly's log aggregator + Grafana parse cleanly. Debug
+  # noise is off by default; flip via `fly secrets set RUST_LOG=...`.
+  RUST_LOG = "info,aex_control_plane=info,sqlx=warn"
+  # Match Dockerfile; explicit here so `fly deploy --env` tweaks
+  # don't silently override us.
+  BIND_ADDR = "0.0.0.0:8080"
+  LOG_FORMAT = "json"
+  # CORS: locked down to spize.io by default. Operators add custom
+  # origins via `fly secrets set CORS_ALLOWED_ORIGINS=https://a,https://b`.
+  CORS_ALLOWED_ORIGINS = "https://spize.io"
+
+# Persistent volume for audit log / blob store / signing key.
+# Single volume is sufficient for alpha; Sprint 4 stays on a single
+# machine. Sprint 5+ horizontal scale-out will need object storage
+# (S3 / Cloudflare R2) behind the BlobStore trait.
+[[mounts]]
+  source = "aex_data"
+  destination = "/app/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"   # scale to zero when idle
+  auto_start_machines = true
+  min_machines_running = 1      # keep one warm for first-request latency
+  processes = ["app"]
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/healthz"
+
+# Expose /metrics so Fly's Prometheus scraper picks up the histograms
+# shipped in Sprint 3 PR #32. Open this with `fly metrics-dashboard`.
+[metrics]
+  port = 8080
+  path = "/metrics"
+
+# Production machine sizing. Start small; bump after the first real
+# usage dashboard (PR #39 onwards) shows actual CPU/RAM.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory_mb = 512
+  cpu_kind = "shared"
+  cpus = 1

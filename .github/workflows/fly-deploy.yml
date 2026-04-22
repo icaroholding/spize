@@ -1,0 +1,53 @@
+name: Fly deploy (aex-control-plane)
+
+# Auto-deploy on any master push that touches control-plane sources
+# or the deploy config. Anything else (SDK-only changes, docs, etc.)
+# doesn't need a redeploy, so the workflow stays quiet.
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'crates/aex-control-plane/**'
+      - 'crates/aex-core/**'
+      - 'crates/aex-audit/**'
+      - 'crates/aex-scanner/**'
+      - 'crates/aex-policy/**'
+      - 'crates/aex-net/**'
+      - 'crates/aex-tunnel/**'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'deploy/fly/**'
+      - '.github/workflows/fly-deploy.yml'
+  # Manual trigger from the GitHub UI — useful for re-deploying after
+  # a config-only secret rotation.
+  workflow_dispatch:
+
+# A single in-flight deploy at a time. Two concurrent deploys racing
+# to the same Fly app would interleave machine replacements and is
+# never what we want.
+concurrency:
+  group: fly-deploy-aex-control-plane
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Fly
+    runs-on: ubuntu-latest
+    # Pin the flyctl action to a commit SHA, not a tag. Tags can be
+    # moved; SHAs cannot.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
+
+      - name: Install flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be  # v1.5
+
+      - name: Deploy to Fly.io
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          flyctl deploy \
+            --remote-only \
+            --config deploy/fly/fly.toml \
+            --dockerfile deploy/fly/Dockerfile
