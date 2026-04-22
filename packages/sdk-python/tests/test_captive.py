@@ -117,3 +117,45 @@ class TestDetectNetworkState:
         assert APPLE_URL == "http://captive.apple.com/hotspot-detect.html"
         assert GOOGLE_URL == "http://www.google.com/generate_204"
         assert MS_URL == "http://www.msftncsi.com/ncsi.txt"
+
+    def test_captive_when_apple_returns_511(self) -> None:
+        # RFC 6585 Network Authentication Required — the captive
+        # portal is speaking HTTP properly.
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "captive.apple.com":
+                return httpx.Response(511, text="please authenticate")
+            if request.url.host == "www.google.com":
+                return httpx.Response(204)
+            return httpx.Response(200, text="Microsoft NCSI")
+
+        client = _mock_client(handler)
+        assert detect_network_state(client) == NetworkState.CAPTIVE_PORTAL
+
+    def test_captive_when_google_returns_511(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "captive.apple.com":
+                return httpx.Response(200, text="Success")
+            if request.url.host == "www.google.com":
+                return httpx.Response(511)
+            return httpx.Response(200, text="Microsoft NCSI")
+
+        client = _mock_client(handler)
+        assert detect_network_state(client) == NetworkState.CAPTIVE_PORTAL
+
+    def test_captive_when_ms_returns_511(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "captive.apple.com":
+                return httpx.Response(200, text="Success")
+            if request.url.host == "www.google.com":
+                return httpx.Response(204)
+            return httpx.Response(511)
+
+        client = _mock_client(handler)
+        assert detect_network_state(client) == NetworkState.CAPTIVE_PORTAL
+
+    def test_captive_when_all_three_return_511(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(511)
+
+        client = _mock_client(handler)
+        assert detect_network_state(client) == NetworkState.CAPTIVE_PORTAL
