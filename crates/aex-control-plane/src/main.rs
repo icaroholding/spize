@@ -6,7 +6,14 @@ use tracing_subscriber::{prelude::*, EnvFilter};
 
 use aex_audit::FileAuditLog;
 use aex_control_plane::{
-    blob::FileBlobStore, build_app_with_cors, config::Config, signer::ControlPlaneSigner, AppState,
+    blob::FileBlobStore,
+    build_app_with_cors,
+    clock::SystemClock,
+    config::Config,
+    endpoint_validator::EndpointValidator,
+    health_monitor::{HealthMonitor, ValidatorProber},
+    signer::ControlPlaneSigner,
+    AppState,
 };
 use aex_policy::{TierName, TierPolicy};
 use aex_scanner::{
@@ -53,8 +60,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "control-plane signing key ready"
     );
 
-    let state = AppState::new(db, scanner, policy, audit, blobs).with_signer(signer);
+    let state = AppState::new(db.clone(), scanner, policy, audit, blobs).with_signer(signer);
     let app = build_app_with_cors(state, &cfg.cors_allowed_origins);
+
+    // Sprint 3: background endpoint health loop (ADR-0014 + ADR-0021).
+    // The monitor owns its own copy of the DB pool + validator so it
+    // never contends with axum handlers for permits beyond the
+    // process-wide EndpointValidator semaphore.
+    let prober = Arc::new(ValidatorProber::new(EndpointValidator::with_defaults()));
+    let monitor_handle = HealthMonitor::spawn(db, prober, Arc::new(SystemClock::new()));
 
     let listener = TcpListener::bind(cfg.bind_addr).await?;
     tracing::info!(addr = %listener.local_addr()?, "listening");
@@ -62,6 +76,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+
+    // Ctrl+C / SIGTERM arrived — stop the monitor BEFORE returning so
+    // the Tokio runtime doesn't drop mid-tick and leave the DB pool
+    // in an awkward state.
+    if let Err(e) = monitor_handle.shutdown().await {
+        tracing::warn!(error = %e, "health monitor shutdown join error");
+    }
 
     Ok(())
 }

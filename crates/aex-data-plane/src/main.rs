@@ -581,6 +581,7 @@ fn transports_json(kind: &str, url: &str) -> String {
         url: url.to_string(),
         priority: 0,
         health_hint_unix: None,
+        health: None,
     };
     serde_json::to_string(&serde_json::json!({
         "transports": [endpoint],
