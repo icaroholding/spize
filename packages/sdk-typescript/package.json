@@ -1,6 +1,6 @@
 {
   "name": "@aexproto/sdk",
-  "version": "1.2.0-alpha.3",
+  "version": "1.3.0-beta.1",
   "description": "TypeScript SDK for AEX — the Agent Exchange Protocol.",
   "license": "Apache-2.0",
   "author": "Icaro Holding <oss@spize.io>",

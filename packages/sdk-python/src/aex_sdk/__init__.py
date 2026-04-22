@@ -55,4 +55,4 @@ __all__ = [
     "try_endpoints",
 ]
 
-__version__ = "1.2.0a3"
+__version__ = "1.3.0b1"

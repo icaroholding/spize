@@ -162,8 +162,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let local_addr = listener.local_addr()?;
     tracing::info!(%local_addr, "aex-data-plane listener bound");
 
-    let (public_url, tunnel_guard) = resolve_public_url(&opts, local_addr.port()).await?;
-    tracing::info!(%public_url, "tunnel reports connected; waiting for public reachability");
+    let ResolvedTransport {
+        url: public_url,
+        kind: transport_kind,
+        guard: tunnel_guard,
+    } = resolve_public_url(&opts, local_addr.port()).await?;
+    tracing::info!(%public_url, transport_kind, "tunnel reports connected; waiting for public reachability");
 
     let shared_source = load_blob_source(&opts).await?;
 
@@ -223,10 +227,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(err);
     }
 
-    // Order matters: URL first, then READY. Orchestrators parse both.
+    // Order matters: URL first, then READY, then the machine-readable
+    // transports blob. Orchestrators that only understand the legacy
+    // lines keep working; newer ones (Spize Desktop, hosted deployer)
+    // consume AEX_TRANSPORTS_JSON to populate `reachable_at[]` on the
+    // transfer without re-deriving the transport kind from the URL
+    // shape. See ADR-0013 for the JSON schema.
     println!("AEX_DATA_PLANE_URL={}", public_url);
     println!("AEX_READY=1");
-    tracing::info!(%public_url, "data plane ready");
+    println!(
+        "AEX_TRANSPORTS_JSON={}",
+        transports_json(transport_kind, &public_url)
+    );
+    tracing::info!(%public_url, transport_kind, "data plane ready");
 
     match server_handle.await {
         Ok(Ok(())) => Ok(()),
@@ -349,19 +362,45 @@ async fn admin_insert_blob(
     (StatusCode::CREATED, "ok").into_response()
 }
 
+/// Result of bringing up a transport: the public URL + a process guard
+/// (`None` when the URL was operator-supplied via `AEX_PUBLIC_URL`) + the
+/// `aex_core::Endpoint::KIND_*` string classifying it. The kind feeds
+/// into the `AEX_TRANSPORTS_JSON` stdout line (Delight #2 from Sprint 2)
+/// so orchestrators don't have to re-derive it from the URL shape.
+struct ResolvedTransport {
+    url: String,
+    kind: &'static str,
+    guard: Option<CloudflareQuickTunnel>,
+}
+
 async fn resolve_public_url(
     opts: &Opts,
     local_port: u16,
-) -> Result<(String, Option<CloudflareQuickTunnel>), Box<dyn std::error::Error>> {
+) -> Result<ResolvedTransport, Box<dyn std::error::Error>> {
     match opts.tunnel_provider.as_str() {
         "none" => {
             let url = opts
                 .public_url_override
                 .clone()
                 .ok_or("AEX_PUBLIC_URL is required when AEX_TUNNEL_PROVIDER=none")?;
-            Ok((url, None))
+            // Operator-supplied URL — we can't know the transport type
+            // from the URL alone, so surface it as named (stable
+            // hostname is the usual case when someone front-ends a
+            // named Cloudflare tunnel or a Tailscale funnel behind
+            // their own orchestration).
+            Ok(ResolvedTransport {
+                url,
+                kind: aex_core::Endpoint::KIND_CLOUDFLARE_NAMED,
+                guard: None,
+            })
         }
         "cloudflare" => {
+            // Zero-config delight: surface a crisp "cloudflared not
+            // installed" error BEFORE we try to spawn the tunnel, so
+            // the failure mode is obviously "install cloudflared"
+            // rather than a stderr race from a dead subprocess.
+            preflight_cloudflared(opts.cloudflared_binary.as_deref())?;
+
             let mut t = CloudflareQuickTunnel::new();
             if let Some(p) = &opts.cloudflared_binary {
                 t = t.with_binary_path(p);
@@ -370,11 +409,40 @@ async fn resolve_public_url(
             let url = t
                 .public_url()
                 .ok_or("cloudflared returned no URL despite connecting")?;
-            Ok((url, Some(t)))
+            Ok(ResolvedTransport {
+                url,
+                kind: aex_core::Endpoint::KIND_CLOUDFLARE_QUICK,
+                guard: Some(t),
+            })
         }
         other => Err(format!(
             "unknown AEX_TUNNEL_PROVIDER={} (expected 'cloudflare' or 'none')",
             other
+        )
+        .into()),
+    }
+}
+
+/// Check that `cloudflared` is callable before we try to spawn a
+/// CloudflareQuickTunnel. A caller-supplied path is used as-is; the
+/// default resolves `cloudflared` through `PATH`. Missing binary →
+/// actionable error that names the install URL, so first-run users
+/// aren't stuck parsing a subprocess spawn error.
+fn preflight_cloudflared(explicit_path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    let (label, path) = match explicit_path {
+        Some(p) => ("AEX_CLOUDFLARED_BINARY", p.to_string()),
+        None => ("cloudflared (from PATH)", "cloudflared".to_string()),
+    };
+    match std::process::Command::new(&path)
+        .arg("--version")
+        .output()
+    {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!(
+            "cannot execute {label} at `{path}`: {e}. \
+             Install the Cloudflare tunnel daemon \
+             (https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) \
+             or set AEX_TUNNEL_PROVIDER=none with AEX_PUBLIC_URL=<your-url>."
         )
         .into()),
     }
@@ -504,6 +572,22 @@ async fn emit_network_state() {
     tracing::info!(state = state.as_stdout_value(), "captive-portal probe done");
 }
 
+/// Format the `AEX_TRANSPORTS_JSON` stdout payload. Shape matches what
+/// the control plane's `reachable_at[]` column accepts, so orchestrators
+/// can forward the line verbatim into `POST /v1/transfers`.
+fn transports_json(kind: &str, url: &str) -> String {
+    let endpoint = aex_core::Endpoint {
+        kind: kind.to_string(),
+        url: url.to_string(),
+        priority: 0,
+        health_hint_unix: None,
+    };
+    serde_json::to_string(&serde_json::json!({
+        "transports": [endpoint],
+    }))
+    .expect("Endpoint is serde-serializable by construction")
+}
+
 async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
@@ -526,4 +610,65 @@ async fn shutdown_signal() {
         _ = terminate => {},
     }
     tracing::info!("shutdown signal received");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transports_json_cloudflare_quick_shape() {
+        let out = transports_json(
+            aex_core::Endpoint::KIND_CLOUDFLARE_QUICK,
+            "https://x.trycloudflare.com",
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let t = &parsed["transports"];
+        assert!(t.is_array(), "transports must be an array: {out}");
+        assert_eq!(t.as_array().unwrap().len(), 1);
+        assert_eq!(t[0]["kind"], "cloudflare_quick");
+        assert_eq!(t[0]["url"], "https://x.trycloudflare.com");
+        assert_eq!(t[0]["priority"], 0);
+        // Absent fields should not appear on the wire.
+        assert!(
+            t[0].get("health_hint_unix").is_none(),
+            "health_hint should not be emitted when None: {out}"
+        );
+    }
+
+    #[test]
+    fn transports_json_round_trips_through_endpoint_deser() {
+        // The whole point of this line is that a control plane / SDK
+        // can feed the payload straight into `reachable_at[]`. Verify
+        // the transports array parses back into `aex_core::Endpoint`s.
+        let out = transports_json(
+            aex_core::Endpoint::KIND_CLOUDFLARE_QUICK,
+            "https://x.trycloudflare.com",
+        );
+        #[derive(serde::Deserialize)]
+        struct Wrap {
+            transports: Vec<aex_core::Endpoint>,
+        }
+        let w: Wrap = serde_json::from_str(&out).unwrap();
+        assert_eq!(w.transports.len(), 1);
+        assert_eq!(w.transports[0].kind, "cloudflare_quick");
+        assert_eq!(w.transports[0].url, "https://x.trycloudflare.com");
+    }
+
+    #[test]
+    fn preflight_cloudflared_reports_missing_binary() {
+        // Explicit bogus path — preflight should fail with a message
+        // that actually names the path and suggests an action.
+        let err = preflight_cloudflared(Some("/definitely/not/a/real/bin/cloudflared"))
+            .expect_err("expected preflight to fail on nonexistent binary");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cloudflared"),
+            "error should mention the binary: {msg}"
+        );
+        assert!(
+            msg.contains("AEX_TUNNEL_PROVIDER=none"),
+            "error should suggest the escape hatch: {msg}"
+        );
+    }
 }
