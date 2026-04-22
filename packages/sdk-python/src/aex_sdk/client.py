@@ -454,6 +454,7 @@ class SpizeClient:
             status_code=r.status_code,
             code=body.get("code"),
             message=body.get("message") or r.text or "unknown error",
+            runbook_url=body.get("runbook_url"),
         )
 
 

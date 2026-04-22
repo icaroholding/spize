@@ -451,7 +451,8 @@ export class SpizeClient {
         signal: ctrl.signal,
       });
       if (!resp.ok) {
-        let body: { code?: string; message?: string } = {};
+        let body: { code?: string; message?: string; runbook_url?: string } =
+          {};
         try {
           body = (await resp.json()) as typeof body;
         } catch {
@@ -461,6 +462,7 @@ export class SpizeClient {
           resp.status,
           body.code ?? null,
           body.message ?? resp.statusText,
+          body.runbook_url ?? null,
         );
       }
       const buf = await resp.arrayBuffer();
@@ -579,7 +581,8 @@ export class SpizeClient {
         signal: ctrl.signal,
       });
       if (!resp.ok) {
-        let body: { code?: string; message?: string } = {};
+        let body: { code?: string; message?: string; runbook_url?: string } =
+          {};
         try {
           body = (await resp.json()) as typeof body;
         } catch {
@@ -589,6 +592,7 @@ export class SpizeClient {
           resp.status,
           body.code ?? null,
           body.message ?? resp.statusText,
+          body.runbook_url ?? null,
         );
       }
       return (await resp.json()) as T;
