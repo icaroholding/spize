@@ -5,15 +5,34 @@ on:
     tags:
       - 'v*'
 
-# Prerequisites:
-# - `NPM_TOKEN` secret must be an **Automation** token (not Granular /
-#   Classic Publish). Classic tokens from accounts with 2FA require an
-#   OTP at publish time and will fail with EOTP in CI. Rotate via
-#   https://www.npmjs.com/settings/{user}/tokens → Generate → Automation.
+# Authentication: Trusted Publishing via OIDC (no long-lived NPM_TOKEN).
+# The registry federates GitHub's workflow identity to a short-lived
+# access token at publish time. Setup requirements:
+#
+# 1. On npmjs.com, for EACH package under @aexproto, configure this
+#    workflow as a trusted publisher:
+#      https://www.npmjs.com/package/@aexproto/sdk/access
+#      https://www.npmjs.com/package/@aexproto/mcp-server/access
+#    → "Add Trusted Publisher" → GitHub Actions
+#    → Org: icaroholding, Repo: aex, Workflow: publish-npm.yml
+#
+# 2. The job below sets `permissions: id-token: write` so actions/setup-node
+#    can request the OIDC token on our behalf. `--provenance` on npm publish
+#    adds a signed attestation tying the tarball to this workflow run.
+#
+# If trusted publishing is not configured yet, publish fails with
+# `ENEEDAUTH` / `403` — configure it on npmjs.com per step 1 above.
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      # Required for OIDC token exchange with the npm registry.
+      id-token: write
+      # Needed by actions/checkout on public repos (default is already
+      # read, but making it explicit helps when reviewing least-
+      # privilege audits).
+      contents: read
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
       - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b  # v4.0.3
@@ -45,20 +64,18 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Resolved dist-tag: $tag (from $GITHUB_REF_NAME)"
       - name: Publish @aexproto/sdk
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: >
           npm publish
           --workspace=packages/sdk-typescript
           --access public
+          --provenance
           --tag ${{ steps.disttag.outputs.tag }}
       - name: Wait for npm index
         run: sleep 30
       - name: Publish @aexproto/mcp-server
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: >
           npm publish
           --workspace=packages/mcp-server
           --access public
+          --provenance
           --tag ${{ steps.disttag.outputs.tag }}
