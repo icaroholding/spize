@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aex-sdk"
-version = "1.2.0a3"
+version = "1.3.0b1"
 description = "Python SDK for AEX — the Agent Exchange Protocol."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,7 +12,7 @@ license = { text = "Apache-2.0" }
 authors = [{ name = "Icaro Holding", email = "oss@spize.io" }]
 keywords = ["aex", "agent", "protocol", "identity", "transfer", "p2p"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",

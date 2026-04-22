@@ -2,13 +2,60 @@
 
 All notable changes are recorded here. Versioning follows [semver](https://semver.org).
 
-## Unreleased — targeting `v1.3.0-beta.1`
+## [1.3.0-beta.1] — 2026-04-22
 
-Sprint 1.5 scope: `aex-net` crate + SDK DoH parity + protocol §5
-normative spec + 37 ADRs + two data-plane CLI delights. Wire format
-stays v1 in this sprint; breaking `reachable_at[]` migration and
-Iroh first-class transport land in Sprint 2 with the `v1.3.0-beta.1`
-tag.
+First beta release after Sprint 2. Bundles transport plurality,
+formal key rotation, and the ADR-0011 keypair bridge. Sprint 1.5's
+`aex-net` crate + protocol §5 spec are included here too — alpha.3
+was a git snapshot and never published, so this is the first public
+release after alpha.1.
+
+### Added (Sprint 2)
+- **Transport plurality** — `Endpoint { kind, url, priority,
+  health_hint_unix }` and `transfers.reachable_at JSONB`.
+  Transfer creation accepts `reachable_at[]` and the control plane
+  probes every entry in parallel under a 50-permit semaphore + 15 s
+  budget, dropping unhealthy endpoints before persisting.
+  Providers: `CloudflareQuickTunnel` (ephemeral), `NamedCloudflareTunnel`
+  (persistent), `IrohTunnel` (P2P via iroh `=0.96.0`),
+  `TailscaleFunnelTunnel`, `FrpTunnel`.
+- **`aex-tunnel::TunnelOrchestrator`** — composes multiple providers
+  into the sender's `reachable_at[]` (ADR decision 1B: keep
+  single-URL providers, compose at a layer above).
+- **Formal key rotation protocol** (ADR-0024) — `spize-rotate-key:v1`
+  canonical message signed by the outgoing key. `POST /v1/agents/rotate-key`
+  records the new key with `valid_from = now()` and sets the previous
+  key's `valid_to = now() + 24 h`. During that 24 h grace window
+  signatures from EITHER key verify, so in-flight receipts don't
+  bounce on rotation. Backed by the new `agent_keys` table with a
+  partial `UNIQUE (agent_id) WHERE valid_to IS NULL` index that makes
+  "two active keys for one agent" physically impossible.
+- **`aex_control_plane::clock::Clock` trait** — injected into
+  `AppState` so tests can advance time deterministically across the
+  24 h grace boundary. Production uses `SystemClock`; tests use
+  `FrozenClock`.
+- **Python / TypeScript SDK rotation** — `SpizeClient.rotate_key(new_identity)`
+  / `SpizeClient.rotateKey(newIdentity)` + the canonical
+  `rotate_key_challenge_bytes` helper in both `aex_sdk.wire` and
+  `@aexproto/sdk`'s `wire.ts`. Both refuse cross-agent / identical-key
+  rotations before hitting the network.
+- **ADR-0011 keypair bridge** — `IrohTunnel::with_secret_key_bytes(&[u8; 32])`
+  accepts the raw bytes from
+  `aex_identity::SpizeNativeProvider::secret_key_bytes`, so the Iroh
+  `EndpointId` is the same Ed25519 public key that backs the
+  `spize:org/name:fingerprint`. Pure-crypto invariant test in
+  `crates/aex-tunnel/tests/adr_0011_keypair_bridge.rs`.
+- **`AEX_TRANSPORTS_JSON` stdout** — the `aex-data-plane` binary emits
+  a machine-readable `{"transports":[Endpoint…]}` line after
+  `AEX_READY=1`, so orchestrators can forward the payload verbatim
+  into `POST /v1/transfers`'s `reachable_at[]`. Delight #2 from the
+  Sprint 2 plan.
+- **Zero-config `cloudflared` preflight** — the data plane
+  fail-fasts with an actionable install hint when the default
+  `AEX_TUNNEL_PROVIDER=cloudflare` is used but the binary isn't on
+  `PATH`. Delight #4.
+
+### Added (Sprint 1.5)
 
 ### Added
 - `aex-net` crate — shared DNS-over-HTTPS resolver, HTTP client
@@ -64,7 +111,12 @@ tag.
   so the DoH endpoint itself resolves via Cloudflare anycast rather
   than the OS resolver.
 
-## [1.2.0-alpha.3] — in progress
+## [1.2.0-alpha.3] — skipped (not published)
+
+> Workspace manifests ran at `1.2.0-alpha.3` during Sprint 1 / 1.5 as
+> an internal snapshot. Never tagged, never published to any registry.
+> The alpha.3 changes listed below are included in the `v1.3.0-beta.1`
+> release above, which is the first public successor to `alpha.1`.
 
 Sprint 1 scope: close M2 end-to-end, wire release automation, correct domain references.
 
