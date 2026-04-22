@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod health;
 pub mod inbox;
+pub mod metrics;
 pub mod transfers;
 
 use axum::Router;

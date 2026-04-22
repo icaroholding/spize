@@ -62,6 +62,13 @@ reqwest = { workspace = true }
 # Sprint 2 endpoint validator.
 futures.workspace = true
 
+# Prometheus text-format exporter for /metrics (Sprint 3). We take the
+# `tikv/rust-prometheus` crate (upstream Prometheus community's Rust
+# client) over `metrics-rs` because it produces direct text output
+# without a reporter layer — we want to serve /metrics on the same
+# axum router, not push to an external collector.
+prometheus = { version = "0.14", default-features = false }
+
 [dev-dependencies]
 rand.workspace = true
 tower = { workspace = true, features = ["util"] }

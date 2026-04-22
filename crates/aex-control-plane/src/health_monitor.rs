@@ -37,6 +37,7 @@ use aex_core::{Endpoint, EndpointHealth, HealthStatus};
 
 use crate::clock::Clock;
 use crate::endpoint_validator::EndpointValidator;
+use crate::metrics::Metrics;
 
 /// Cadence while at least one transfer is in-flight. 30 s lines up
 /// with the wall-clock budget callers see on `send_via_tunnel` and is
@@ -90,12 +91,13 @@ impl EndpointProber for ValidatorProber {
     }
 }
 
-/// Periodic re-validator. Owns the DB pool, the prober, the clock, and
-/// a shutdown signal.
+/// Periodic re-validator. Owns the DB pool, the prober, the clock, the
+/// metrics registry, and a shutdown signal.
 pub struct HealthMonitor {
     db: PgPool,
     prober: Arc<dyn EndpointProber>,
     clock: Arc<dyn Clock>,
+    metrics: Option<Metrics>,
     shutdown: watch::Receiver<bool>,
 }
 
@@ -129,8 +131,18 @@ impl HealthMonitor {
             db,
             prober,
             clock,
+            metrics: None,
             shutdown,
         }
+    }
+
+    /// Attach a [`Metrics`] registry. The monitor then emits counters
+    /// for probe outcomes + state transitions and a gauge for
+    /// in-flight transfer count each tick. Optional so unit tests can
+    /// skip the metrics wiring entirely.
+    pub fn with_metrics(mut self, metrics: Metrics) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 
     /// Spawn the monitor on the current tokio runtime. Production
@@ -139,9 +151,10 @@ impl HealthMonitor {
         db: PgPool,
         prober: Arc<dyn EndpointProber>,
         clock: Arc<dyn Clock>,
+        metrics: Metrics,
     ) -> HealthMonitorHandle {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let monitor = HealthMonitor::new(db, prober, clock, shutdown_rx);
+        let monitor = HealthMonitor::new(db, prober, clock, shutdown_rx).with_metrics(metrics);
         let join = tokio::spawn(async move {
             monitor.run().await;
         });
@@ -188,6 +201,10 @@ impl HealthMonitor {
         let rows = load_in_flight_transfers(&self.db).await?;
         let now_unix = self.clock.now_unix();
 
+        if let Some(m) = &self.metrics {
+            m.in_flight_transfers.set(rows.len() as i64);
+        }
+
         let mut touched = 0usize;
         for (transfer_id, endpoints) in rows {
             if endpoints.is_empty() {
@@ -195,8 +212,36 @@ impl HealthMonitor {
             }
             let mut updated = Vec::with_capacity(endpoints.len());
             for ep in endpoints {
+                let prior_status = ep.health.as_ref().map(|h| h.status);
                 let outcome = self.prober.probe(&ep).await;
-                updated.push(fold_health(ep, outcome, now_unix));
+                if let Some(m) = &self.metrics {
+                    m.health_probes_total
+                        .with_label_values(&[match outcome {
+                            ProbeOutcome::Success => "success",
+                            ProbeOutcome::Failure => "failure",
+                        }])
+                        .inc();
+                }
+                let next = fold_health(ep, outcome, now_unix);
+                // Debouncer transition telemetry — only counts
+                // a state flip once, not every probe at the same
+                // state. `prior_status = None` means the endpoint
+                // hadn't been probed before; treat the initial seed
+                // as "not a transition" since it's synthetic.
+                if let (Some(m), Some(prior)) = (&self.metrics, prior_status) {
+                    let new_status = next.health.as_ref().map(|h| h.status);
+                    if Some(prior) != new_status {
+                        let direction = match new_status {
+                            Some(HealthStatus::Healthy) => "to_healthy",
+                            Some(HealthStatus::Unhealthy) => "to_unhealthy",
+                            None => "to_unknown",
+                        };
+                        m.health_transitions_total
+                            .with_label_values(&[direction])
+                            .inc();
+                    }
+                }
+                updated.push(next);
             }
             persist_reachable_at(&self.db, &transfer_id, &updated).await?;
             touched += 1;

@@ -160,17 +160,20 @@ async fn register(
     )
     .await
     {
-        Ok(row) => Ok((
-            StatusCode::CREATED,
-            Json(AgentResponse {
-                agent_id: row.agent_id,
-                public_key_hex: hex::encode(&row.public_key),
-                fingerprint: row.fingerprint,
-                org: row.org,
-                name: row.name,
-                created_at: row.created_at,
-            }),
-        )),
+        Ok(row) => {
+            state.metrics.agents_registered_total.inc();
+            Ok((
+                StatusCode::CREATED,
+                Json(AgentResponse {
+                    agent_id: row.agent_id,
+                    public_key_hex: hex::encode(&row.public_key),
+                    fingerprint: row.fingerprint,
+                    org: row.org,
+                    name: row.name,
+                    created_at: row.created_at,
+                }),
+            ))
+        }
         Err(err) => {
             if let Some(field) = db::unique_violation_field(&err) {
                 Err(ApiError::Conflict(format!("{} already registered", field)))
@@ -359,6 +362,8 @@ async fn rotate_key(
     };
 
     let previous_key_valid_until = now.unix_timestamp() + keys_db::ROTATION_GRACE_SECS;
+
+    state.metrics.agents_key_rotated_total.inc();
 
     Ok((
         StatusCode::OK,
