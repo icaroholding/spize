@@ -7,21 +7,14 @@
 //! probes).
 
 use axum::{extract::State, routing::post, Json, Router};
-use ed25519_dalek::{Signature as DalekSignature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use aex_core::wire::{transfer_receipt_bytes, MAX_NONCE_LEN, MIN_NONCE_LEN};
 use aex_core::AgentId;
 
-use crate::{
-    db::{agents as agents_db, transfers as tx_db},
-    error::ApiError,
-    AppState,
-};
+use crate::{db::transfers as tx_db, error::ApiError, AppState};
 
-const SIGNATURE_LEN: usize = 64;
-const PUBLIC_KEY_LEN: usize = 32;
 const INBOX_TRANSFER_MARKER: &str = "inbox";
 /// Cap how many rows we return per call — protects both server memory and
 /// the audit log. Clients that expect more pages can add pagination later.
@@ -68,17 +61,14 @@ async fn list_inbox(
     if !req.nonce.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(ApiError::BadRequest("nonce must be hex".into()));
     }
-    let now = OffsetDateTime::now_utc().unix_timestamp();
-    if !aex_core::wire::is_within_clock_skew(now, req.issued_at) {
+    let now_unix = state.clock.now_unix();
+    if !aex_core::wire::is_within_clock_skew(now_unix, req.issued_at) {
         return Err(ApiError::BadRequest(
             "issued_at outside allowed skew".into(),
         ));
     }
 
     let recipient = AgentId::new(&req.recipient_agent_id)?;
-    let rec_row = agents_db::find_by_agent_id(&state.db, recipient.as_str())
-        .await?
-        .ok_or_else(|| ApiError::Unauthorized("agent not registered".into()))?;
 
     let canonical = transfer_receipt_bytes(
         recipient.as_str(),
@@ -89,24 +79,17 @@ async fn list_inbox(
     )
     .map_err(|e| ApiError::BadRequest(format!("canonical: {}", e)))?;
 
-    let vk_bytes: [u8; PUBLIC_KEY_LEN] =
-        rec_row.public_key.as_slice().try_into().map_err(|_| {
-            ApiError::internal(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "bad pubkey length",
-            ))
-        })?;
-    let vk = VerifyingKey::from_bytes(&vk_bytes)
-        .map_err(|e| ApiError::internal(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
-
     let sig_bytes = hex::decode(&req.signature_hex)
         .map_err(|e| ApiError::BadRequest(format!("signature_hex: {}", e)))?;
-    if sig_bytes.len() != SIGNATURE_LEN {
-        return Err(ApiError::BadRequest("signature must be 64 bytes".into()));
-    }
-    let sig_arr: [u8; SIGNATURE_LEN] = sig_bytes.as_slice().try_into().expect("length checked");
-    vk.verify(&canonical, &DalekSignature::from_bytes(&sig_arr))
-        .map_err(|_| ApiError::Unauthorized("inbox signature invalid".into()))?;
+
+    crate::verify::verify_with_valid_keys(
+        &state.db,
+        recipient.as_str(),
+        state.clock.now(),
+        &canonical,
+        &sig_bytes,
+    )
+    .await?;
 
     let rows = tx_db::list_inbox(&state.db, recipient.as_str(), INBOX_LIMIT).await?;
     let entries: Vec<InboxEntry> = rows

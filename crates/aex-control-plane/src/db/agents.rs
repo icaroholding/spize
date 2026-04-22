@@ -20,12 +20,15 @@ pub struct AgentRow {
     pub revoked_at: Option<OffsetDateTime>,
 }
 
-/// Insert a freshly-verified agent row. Returns the inserted row.
+/// Insert a freshly-verified agent row AND its first row in
+/// `agent_keys` (so the rotation-history ledger is initialized from the
+/// moment an agent exists). The pair is wrapped in a single transaction
+/// to keep the two tables consistent — there is no state where an
+/// `agents` row lacks an `agent_keys` row.
 ///
 /// Errors:
 /// - `sqlx::Error::Database` with unique-violation constraint name — caller
-///   maps to 409 Conflict. We surface the *field* that collided via
-///   [`UniqueCollision`] so the handler can produce a useful message.
+///   maps to 409 Conflict.
 pub async fn insert(
     pool: &PgPool,
     agent_id: &str,
@@ -34,6 +37,8 @@ pub async fn insert(
     org: &str,
     name: &str,
 ) -> Result<AgentRow, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
     let row = sqlx::query_as::<_, AgentRow>(
         r#"
         INSERT INTO agents (agent_id, public_key, fingerprint, org, name)
@@ -46,8 +51,26 @@ pub async fn insert(
     .bind(fingerprint)
     .bind(org)
     .bind(name)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
+
+    // Seed the rotation ledger so every signature-verifying handler can
+    // go through `agent_keys::valid_keys_at` uniformly — no "never
+    // rotated" special case.
+    sqlx::query(
+        r#"
+        INSERT INTO agent_keys (agent_id, public_key_hex, public_key, valid_from, valid_to)
+        VALUES ($1, $2, $3, $4, NULL)
+        "#,
+    )
+    .bind(&row.agent_id)
+    .bind(hex::encode(&row.public_key))
+    .bind(&row.public_key)
+    .bind(row.created_at)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
     Ok(row)
 }
 

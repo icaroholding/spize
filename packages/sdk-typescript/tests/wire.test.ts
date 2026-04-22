@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   registrationChallengeBytes,
+  rotateKeyChallengeBytes,
   transferIntentBytes,
   transferReceiptBytes,
 } from "../src/wire.js";
@@ -122,6 +123,40 @@ describe("wire", () => {
         "nonce=0123456789abcdef0123456789abcdef\n" +
         "ts=1700000000",
     );
+  });
+
+  it("rotate_key_challenge_bytes matches golden vector", () => {
+    const bytes = rotateKeyChallengeBytes({
+      agentId: "spize:acme/alice:aabbcc",
+      oldPublicKeyHex:
+        "1111111111111111111111111111111111111111111111111111111111111111",
+      newPublicKeyHex:
+        "2222222222222222222222222222222222222222222222222222222222222222",
+      nonce: "0123456789abcdef0123456789abcdef",
+      issuedAtUnix: 1_700_000_000,
+    });
+    expect(DEC.decode(bytes)).toBe(
+      "spize-rotate-key:v1\n" +
+        "agent=spize:acme/alice:aabbcc\n" +
+        "old_pub=1111111111111111111111111111111111111111111111111111111111111111\n" +
+        "new_pub=2222222222222222222222222222222222222222222222222222222222222222\n" +
+        "nonce=0123456789abcdef0123456789abcdef\n" +
+        "ts=1700000000",
+    );
+  });
+
+  it("rotate_key_challenge_bytes rejects identical old/new", () => {
+    expect(() =>
+      rotateKeyChallengeBytes({
+        agentId: "spize:acme/alice:aabbcc",
+        oldPublicKeyHex:
+          "1111111111111111111111111111111111111111111111111111111111111111",
+        newPublicKeyHex:
+          "1111111111111111111111111111111111111111111111111111111111111111",
+        nonce: "0123456789abcdef0123456789abcdef",
+        issuedAtUnix: 1_700_000_000,
+      }),
+    ).toThrow(/must differ/);
   });
 
   it("transfer_receipt_bytes rejects unknown actions", () => {

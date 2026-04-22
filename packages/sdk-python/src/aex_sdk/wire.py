@@ -81,6 +81,34 @@ def transfer_intent_bytes(
     ).encode("ascii")
 
 
+def rotate_key_challenge_bytes(
+    agent_id: str,
+    old_public_key_hex: str,
+    new_public_key_hex: str,
+    nonce: str,
+    issued_at_unix: int,
+) -> bytes:
+    """Canonical bytes signed by the OUTGOING key when rotating.
+
+    Mirrors ``aex_core::wire::rotate_key_challenge_bytes``. See
+    ADR-0024 for the rotation protocol.
+    """
+    _validate_ascii_line(agent_id, "agent_id")
+    _validate_ascii_line(old_public_key_hex, "old_public_key_hex")
+    _validate_ascii_line(new_public_key_hex, "new_public_key_hex")
+    _validate_nonce(nonce)
+    if old_public_key_hex == new_public_key_hex:
+        raise ValueError("old_public_key_hex and new_public_key_hex must differ")
+    return (
+        f"spize-rotate-key:{PROTOCOL_VERSION}\n"
+        f"agent={agent_id}\n"
+        f"old_pub={old_public_key_hex}\n"
+        f"new_pub={new_public_key_hex}\n"
+        f"nonce={nonce}\n"
+        f"ts={issued_at_unix}"
+    ).encode("ascii")
+
+
 def transfer_receipt_bytes(
     recipient_agent_id: str,
     transfer_id: str,

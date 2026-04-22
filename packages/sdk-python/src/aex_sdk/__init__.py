@@ -1,7 +1,12 @@
 """Agent Exchange Protocol (AEX) — Python SDK."""
 
 from aex_sdk.captive import NetworkState, detect_network_state
-from aex_sdk.client import DataPlaneTicket, SpizeClient, TransferResponse
+from aex_sdk.client import (
+    DataPlaneTicket,
+    RotateKeyResponse,
+    SpizeClient,
+    TransferResponse,
+)
 from aex_sdk.endpoint import (
     HTTP_KINDS,
     KIND_CLOUDFLARE_NAMED,
@@ -38,6 +43,7 @@ __all__ = [
     "KNOWN_KINDS",
     "NetworkState",
     "RetryPolicy",
+    "RotateKeyResponse",
     "SpizeClient",
     "SpizeError",
     "SpizeHTTPError",

@@ -96,6 +96,36 @@ def test_invalid_action_rejected() -> None:
         )
 
 
+def test_rotate_key_stable_bytes() -> None:
+    bytes_ = wire.rotate_key_challenge_bytes(
+        agent_id="spize:acme/alice:aabbcc",
+        old_public_key_hex="1111111111111111111111111111111111111111111111111111111111111111",
+        new_public_key_hex="2222222222222222222222222222222222222222222222222222222222222222",
+        nonce="0123456789abcdef0123456789abcdef",
+        issued_at_unix=1_700_000_000,
+    )
+    expected = (
+        b"spize-rotate-key:v1\n"
+        b"agent=spize:acme/alice:aabbcc\n"
+        b"old_pub=1111111111111111111111111111111111111111111111111111111111111111\n"
+        b"new_pub=2222222222222222222222222222222222222222222222222222222222222222\n"
+        b"nonce=0123456789abcdef0123456789abcdef\n"
+        b"ts=1700000000"
+    )
+    assert bytes_ == expected
+
+
+def test_rotate_key_same_old_and_new_rejected() -> None:
+    with pytest.raises(ValueError):
+        wire.rotate_key_challenge_bytes(
+            agent_id="spize:acme/alice:aabbcc",
+            old_public_key_hex="1111111111111111111111111111111111111111111111111111111111111111",
+            new_public_key_hex="1111111111111111111111111111111111111111111111111111111111111111",
+            nonce="0123456789abcdef0123456789abcdef",
+            issued_at_unix=1_700_000_000,
+        )
+
+
 def test_short_nonce_rejected() -> None:
     with pytest.raises(ValueError):
         wire.registration_challenge_bytes(

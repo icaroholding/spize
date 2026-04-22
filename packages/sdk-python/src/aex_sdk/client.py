@@ -16,6 +16,7 @@ from aex_sdk.identity import Identity, random_nonce
 from aex_sdk.resolver import CloudflareDoHResolver, build_http_client
 from aex_sdk.wire import (
     registration_challenge_bytes,
+    rotate_key_challenge_bytes,
     transfer_intent_bytes,
     transfer_receipt_bytes,
 )
@@ -135,6 +136,50 @@ class SpizeClient:
         r = self._http.get(f"/v1/agents/{agent_id}")
         self._raise_for_status(r)
         return r.json()
+
+    def rotate_key(self, new_identity: Identity) -> "RotateKeyResponse":
+        """Rotate to ``new_identity``, authorised by this client's
+        current identity (ADR-0024).
+
+        The caller holds two Identity objects across the rotation
+        window: the outgoing one (``self.identity``) that authorises
+        the rotation, and the incoming one (``new_identity``) that
+        continues to verify for signatures issued after the grace
+        period. Both identities MUST share the same ``org`` / ``name``
+        — you cannot rename an agent by rotating.
+        """
+        if new_identity.org != self.identity.org or new_identity.name != self.identity.name:
+            raise SpizeError(
+                "rotate_key: new identity must share org/name with current identity"
+            )
+        if new_identity.public_key_hex == self.identity.public_key_hex:
+            raise SpizeError("rotate_key: new key is identical to current key")
+        issued_at = int(time.time())
+        nonce = random_nonce()
+        challenge = rotate_key_challenge_bytes(
+            self.identity.agent_id,
+            self.identity.public_key_hex,
+            new_identity.public_key_hex,
+            nonce,
+            issued_at,
+        )
+        signature = self.identity.sign(challenge)
+        payload = {
+            "agent_id": self.identity.agent_id,
+            "new_public_key_hex": new_identity.public_key_hex,
+            "nonce": nonce,
+            "issued_at": issued_at,
+            "signature_hex": signature.hex(),
+        }
+        r = self._http.post("/v1/agents/rotate-key", json=payload)
+        self._raise_for_status(r)
+        body = r.json()
+        return RotateKeyResponse(
+            agent_id=body["agent_id"],
+            new_public_key_hex=body["new_public_key_hex"],
+            valid_from=int(body["valid_from"]),
+            previous_key_valid_until=int(body["previous_key_valid_until"]),
+        )
 
     # ------------------------------- send -------------------------------
 
@@ -413,6 +458,16 @@ class SpizeClient:
 
 
 # ---------- M2 additions ----------
+
+@dataclass(frozen=True)
+class RotateKeyResponse:
+    """Response body returned by ``POST /v1/agents/rotate-key``."""
+
+    agent_id: str
+    new_public_key_hex: str
+    valid_from: int
+    previous_key_valid_until: int
+
 
 @dataclass(frozen=True)
 class DataPlaneTicket:

@@ -9,6 +9,7 @@ export {
   type InboxResponse,
   type InboxEntry,
   type DataPlaneTicket,
+  type RotateKeyResponse,
 } from "./client.js";
 export {
   SpizeError,
@@ -17,6 +18,7 @@ export {
 } from "./errors.js";
 export {
   registrationChallengeBytes,
+  rotateKeyChallengeBytes,
   transferIntentBytes,
   transferReceiptBytes,
   type ReceiptAction,

@@ -89,6 +89,34 @@ export function transferIntentBytes(args: {
   );
 }
 
+/**
+ * Canonical bytes signed by the OUTGOING (current) key when rotating
+ * to a new one. See ADR-0024 and `aex_core::wire::rotate_key_challenge_bytes`.
+ */
+export function rotateKeyChallengeBytes(args: {
+  agentId: string;
+  oldPublicKeyHex: string;
+  newPublicKeyHex: string;
+  nonce: string;
+  issuedAtUnix: number;
+}): Uint8Array {
+  validateAsciiLine(args.agentId, "agent_id");
+  validateAsciiLine(args.oldPublicKeyHex, "old_public_key_hex");
+  validateAsciiLine(args.newPublicKeyHex, "new_public_key_hex");
+  validateNonce(args.nonce);
+  if (args.oldPublicKeyHex === args.newPublicKeyHex) {
+    throw new Error("old_public_key_hex and new_public_key_hex must differ");
+  }
+  return ENCODER.encode(
+    `spize-rotate-key:${PROTOCOL_VERSION}\n` +
+      `agent=${args.agentId}\n` +
+      `old_pub=${args.oldPublicKeyHex}\n` +
+      `new_pub=${args.newPublicKeyHex}\n` +
+      `nonce=${args.nonce}\n` +
+      `ts=${args.issuedAtUnix}`,
+  );
+}
+
 export type ReceiptAction = "download" | "ack" | "inbox" | "request_ticket";
 
 const RECEIPT_ACTIONS: readonly ReceiptAction[] = [

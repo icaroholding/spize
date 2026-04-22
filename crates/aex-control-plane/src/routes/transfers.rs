@@ -29,7 +29,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use ed25519_dalek::{Signature as DalekSignature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -48,9 +47,6 @@ use crate::{
     error::ApiError,
     AppState,
 };
-
-const SIGNATURE_LEN: usize = 64;
-const PUBLIC_KEY_LEN: usize = 32;
 
 /// Append to the audit log, logging (but not propagating) errors.
 ///
@@ -152,8 +148,8 @@ async fn create_transfer(
     if !req.nonce.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(ApiError::BadRequest("nonce must be hex".into()));
     }
-    let now = OffsetDateTime::now_utc().unix_timestamp();
-    if !aex_core::wire::is_within_clock_skew(now, req.issued_at) {
+    let now_unix = state.clock.now_unix();
+    if !aex_core::wire::is_within_clock_skew(now_unix, req.issued_at) {
         return Err(ApiError::BadRequest(
             "issued_at outside allowed skew".into(),
         ));
@@ -199,7 +195,9 @@ async fn create_transfer(
         }
         let healthy = report.healthy_endpoints(endpoints);
 
-        // Verify sender intent signature.
+        // Verify sender intent signature against every key valid at
+        // `clock.now()` so a just-rotated sender's in-flight intent
+        // still verifies under the 24h grace (ADR-0024).
         let canonical = transfer_intent_bytes(
             sender.as_str(),
             &req.recipient,
@@ -212,13 +210,14 @@ async fn create_transfer(
         .map_err(|e| ApiError::BadRequest(format!("cannot build intent: {}", e)))?;
         let sig_bytes = hex::decode(&req.intent_signature_hex)
             .map_err(|e| ApiError::BadRequest(format!("intent_signature_hex: {}", e)))?;
-        if sig_bytes.len() != SIGNATURE_LEN {
-            return Err(ApiError::BadRequest("signature must be 64 bytes".into()));
-        }
-        let vk = verifying_key_from_pubkey_bytes(&sender_row.public_key)?;
-        let sig_arr: [u8; SIGNATURE_LEN] = sig_bytes.as_slice().try_into().expect("length checked");
-        vk.verify(&canonical, &DalekSignature::from_bytes(&sig_arr))
-            .map_err(|_| ApiError::Unauthorized("sender intent signature invalid".into()))?;
+        crate::verify::verify_with_valid_keys(
+            &state.db,
+            sender.as_str(),
+            state.clock.now(),
+            &canonical,
+            &sig_bytes,
+        )
+        .await?;
 
         // Consume intent nonce (replay protection).
         tx_db::consume_intent_nonce(&state.db, sender.as_str(), &req.nonce)
@@ -301,7 +300,8 @@ async fn create_transfer(
         }
 
         // Verify sender intent signature — same canonical bytes as M1, just
-        // without the blob present.
+        // without the blob present. Honours the 24h rotation grace
+        // window (ADR-0024).
         let canonical = transfer_intent_bytes(
             sender.as_str(),
             &req.recipient,
@@ -314,28 +314,14 @@ async fn create_transfer(
         .map_err(|e| ApiError::BadRequest(format!("cannot build intent: {}", e)))?;
         let sig_bytes = hex::decode(&req.intent_signature_hex)
             .map_err(|e| ApiError::BadRequest(format!("intent_signature_hex: {}", e)))?;
-        if sig_bytes.len() != SIGNATURE_LEN {
-            return Err(ApiError::BadRequest("signature must be 64 bytes".into()));
-        }
-        let sender_pubkey_arr: [u8; 32] =
-            sender_row.public_key.as_slice().try_into().map_err(|_| {
-                ApiError::Internal(Box::new(crate::error::SimpleError(
-                    "pubkey length".to_string(),
-                )))
-            })?;
-        let sender_pubkey =
-            ed25519_dalek::VerifyingKey::from_bytes(&sender_pubkey_arr).map_err(|e| {
-                ApiError::Internal(Box::new(crate::error::SimpleError(format!(
-                    "pubkey parse: {}",
-                    e
-                ))))
-            })?;
-        let sig_arr: [u8; 64] = sig_bytes.as_slice().try_into().unwrap();
-        let sig = ed25519_dalek::Signature::from_bytes(&sig_arr);
-        use ed25519_dalek::Verifier;
-        sender_pubkey
-            .verify(&canonical, &sig)
-            .map_err(|_| ApiError::Unauthorized("sender intent signature invalid".into()))?;
+        crate::verify::verify_with_valid_keys(
+            &state.db,
+            sender.as_str(),
+            state.clock.now(),
+            &canonical,
+            &sig_bytes,
+        )
+        .await?;
 
         // Consume intent nonce (replay protection).
         tx_db::consume_intent_nonce(&state.db, sender.as_str(), &req.nonce)
@@ -391,13 +377,10 @@ async fn create_transfer(
         hex::decode(&req.blob_hex).map_err(|e| ApiError::BadRequest(format!("blob_hex: {}", e)))?;
     let sig_bytes = hex::decode(&req.intent_signature_hex)
         .map_err(|e| ApiError::BadRequest(format!("intent_signature_hex: {}", e)))?;
-    if sig_bytes.len() != SIGNATURE_LEN {
-        return Err(ApiError::BadRequest("signature must be 64 bytes".into()));
-    }
 
     let size_bytes = blob.len() as u64;
 
-    // Verify sender's intent signature.
+    // Verify sender's intent signature (honours 24h rotation grace).
     let canonical = transfer_intent_bytes(
         sender.as_str(),
         &req.recipient,
@@ -409,10 +392,14 @@ async fn create_transfer(
     )
     .map_err(|e| ApiError::BadRequest(format!("cannot build intent: {}", e)))?;
 
-    let vk = verifying_key_from_pubkey_bytes(&sender_row.public_key)?;
-    let dalek_sig: [u8; SIGNATURE_LEN] = sig_bytes.as_slice().try_into().expect("length checked");
-    vk.verify(&canonical, &DalekSignature::from_bytes(&dalek_sig))
-        .map_err(|_| ApiError::Unauthorized("intent signature invalid".into()))?;
+    crate::verify::verify_with_valid_keys(
+        &state.db,
+        sender.as_str(),
+        state.clock.now(),
+        &canonical,
+        &sig_bytes,
+    )
+    .await?;
 
     // Consume nonce (after signature passes, before DB side effects).
     let fresh = tx_db::consume_intent_nonce(&state.db, &req.nonce, sender.as_str()).await?;
@@ -763,8 +750,8 @@ async fn verify_recipient_receipt(
     if !req.nonce.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(ApiError::BadRequest("nonce must be hex".into()));
     }
-    let now = OffsetDateTime::now_utc().unix_timestamp();
-    if !aex_core::wire::is_within_clock_skew(now, req.issued_at) {
+    let now_unix = state.clock.now_unix();
+    if !aex_core::wire::is_within_clock_skew(now_unix, req.issued_at) {
         return Err(ApiError::BadRequest(
             "issued_at outside allowed skew".into(),
         ));
@@ -778,10 +765,6 @@ async fn verify_recipient_receipt(
         return Err(ApiError::Unauthorized("you are not the recipient".into()));
     }
 
-    let rec_row = agents_db::find_by_agent_id(&state.db, recipient.as_str())
-        .await?
-        .ok_or_else(|| ApiError::Unauthorized("recipient agent not registered".into()))?;
-
     let canonical = transfer_receipt_bytes(
         recipient.as_str(),
         transfer_id,
@@ -791,31 +774,22 @@ async fn verify_recipient_receipt(
     )
     .map_err(|e| ApiError::BadRequest(format!("canonical: {}", e)))?;
 
-    let vk = verifying_key_from_pubkey_bytes(&rec_row.public_key)?;
     let sig_bytes = hex::decode(&req.signature_hex)
         .map_err(|e| ApiError::BadRequest(format!("signature_hex: {}", e)))?;
-    if sig_bytes.len() != SIGNATURE_LEN {
-        return Err(ApiError::BadRequest("signature must be 64 bytes".into()));
-    }
-    let sig_arr: [u8; SIGNATURE_LEN] = sig_bytes.as_slice().try_into().unwrap();
-    vk.verify(&canonical, &DalekSignature::from_bytes(&sig_arr))
-        .map_err(|_| ApiError::Unauthorized("receipt signature invalid".into()))?;
+
+    crate::verify::verify_with_valid_keys(
+        &state.db,
+        recipient.as_str(),
+        state.clock.now(),
+        &canonical,
+        &sig_bytes,
+    )
+    .await?;
 
     Ok(row)
 }
 
 // ---------- helpers ----------
-
-fn verifying_key_from_pubkey_bytes(bytes: &[u8]) -> Result<VerifyingKey, ApiError> {
-    let arr: [u8; PUBLIC_KEY_LEN] = bytes.try_into().map_err(|_| {
-        ApiError::internal(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "bad pubkey length in database",
-        ))
-    })?;
-    VerifyingKey::from_bytes(&arr)
-        .map_err(|e| ApiError::internal(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
-}
 
 fn classify_recipient(recipient: &str) -> RecipientKind {
     if recipient.starts_with("spize:") {
@@ -908,8 +882,8 @@ pub async fn issue_ticket(
         return Err(ApiError::BadRequest("nonce must be hex".into()));
     }
 
-    let now = OffsetDateTime::now_utc().unix_timestamp();
-    if !aex_core::wire::is_within_clock_skew(now, req.issued_at) {
+    let now_unix = state.clock.now_unix();
+    if !aex_core::wire::is_within_clock_skew(now_unix, req.issued_at) {
         return Err(ApiError::BadRequest(
             "issued_at outside allowed skew".into(),
         ));
@@ -945,34 +919,17 @@ pub async fn issue_ticket(
 
     let sig_bytes = hex::decode(&req.signature_hex)
         .map_err(|e| ApiError::BadRequest(format!("receipt_signature_hex: {}", e)))?;
-    if sig_bytes.len() != SIGNATURE_LEN {
-        return Err(ApiError::BadRequest("signature must be 64 bytes".into()));
-    }
 
-    let rec_row = agents_db::find_by_agent_id(&state.db, recipient.as_str())
-        .await?
-        .ok_or_else(|| ApiError::Unauthorized("recipient not registered".into()))?;
+    crate::verify::verify_with_valid_keys(
+        &state.db,
+        recipient.as_str(),
+        state.clock.now(),
+        &receipt_canonical,
+        &sig_bytes,
+    )
+    .await?;
 
-    let pubkey_arr: [u8; 32] = rec_row.public_key.as_slice().try_into().map_err(|_| {
-        ApiError::Internal(Box::new(crate::error::SimpleError(
-            "pubkey length".to_string(),
-        )))
-    })?;
-    let pubkey = ed25519_dalek::VerifyingKey::from_bytes(&pubkey_arr).map_err(|e| {
-        ApiError::Internal(Box::new(crate::error::SimpleError(format!(
-            "pubkey parse: {}",
-            e
-        ))))
-    })?;
-    let sig_arr: [u8; 64] = sig_bytes.as_slice().try_into().unwrap();
-    let sig = ed25519_dalek::Signature::from_bytes(&sig_arr);
-
-    use ed25519_dalek::Verifier;
-    pubkey
-        .verify(&receipt_canonical, &sig)
-        .map_err(|_| ApiError::Unauthorized("recipient signature does not verify".into()))?;
-
-    let expires = now + TICKET_TTL_SECONDS;
+    let expires = now_unix + TICKET_TTL_SECONDS;
     let ticket_nonce = hex::encode(rand::random::<[u8; 16]>());
     let canon = aex_core::wire::data_ticket_bytes(
         &transfer_id,

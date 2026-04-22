@@ -5,6 +5,7 @@ import { CloudflareDoHResolver, buildDohFetch } from "./resolver.js";
 import {
   registrationChallengeBytes,
   ReceiptAction,
+  rotateKeyChallengeBytes,
   transferIntentBytes,
   transferReceiptBytes,
 } from "./wire.js";
@@ -80,6 +81,20 @@ export interface InboxResponse {
   agent_id: string;
   count: number;
   entries: InboxEntry[];
+}
+
+/**
+ * Response body from `POST /v1/agents/rotate-key` (ADR-0024).
+ *
+ * `previousKeyValidUntil` is a Unix timestamp in seconds; signatures
+ * from the old key keep verifying until that instant, then only the
+ * new key is accepted.
+ */
+export interface RotateKeyResponse {
+  agentId: string;
+  newPublicKeyHex: string;
+  validFrom: number;
+  previousKeyValidUntil: number;
 }
 
 /**
@@ -199,6 +214,54 @@ export class SpizeClient {
 
   async getAgent(agentId: string): Promise<AgentResponse> {
     return this.getJson(`/v1/agents/${agentId}`);
+  }
+
+  /**
+   * Rotate this client's identity to `newIdentity`, authorised by the
+   * current identity. Both identities MUST share the same `org` and
+   * `name` — rotation changes the keypair, not the canonical
+   * agent_id. See ADR-0024 for the 24h grace window semantics.
+   */
+  async rotateKey(newIdentity: Identity): Promise<RotateKeyResponse> {
+    if (
+      newIdentity.org !== this.identity.org ||
+      newIdentity.name !== this.identity.name
+    ) {
+      throw new SpizeError(
+        "rotateKey: new identity must share org/name with current identity",
+      );
+    }
+    if (newIdentity.publicKeyHex === this.identity.publicKeyHex) {
+      throw new SpizeError("rotateKey: new key is identical to current key");
+    }
+    const issuedAt = Math.floor(Date.now() / 1000);
+    const nonce = randomNonce();
+    const challenge = rotateKeyChallengeBytes({
+      agentId: this.identity.agentId,
+      oldPublicKeyHex: this.identity.publicKeyHex,
+      newPublicKeyHex: newIdentity.publicKeyHex,
+      nonce,
+      issuedAtUnix: issuedAt,
+    });
+    const sig = await this.identity.sign(challenge);
+    const body = await this.postJson<{
+      agent_id: string;
+      new_public_key_hex: string;
+      valid_from: number;
+      previous_key_valid_until: number;
+    }>("/v1/agents/rotate-key", {
+      agent_id: this.identity.agentId,
+      new_public_key_hex: newIdentity.publicKeyHex,
+      nonce,
+      issued_at: issuedAt,
+      signature_hex: hex.encode(sig),
+    });
+    return {
+      agentId: body.agent_id,
+      newPublicKeyHex: body.new_public_key_hex,
+      validFrom: Number(body.valid_from),
+      previousKeyValidUntil: Number(body.previous_key_valid_until),
+    };
   }
 
   // ---------- transfers ----------

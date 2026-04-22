@@ -27,10 +27,15 @@ use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
 use aex_core::wire::{
-    registration_challenge_bytes, MAX_CLOCK_SKEW_SECS, MAX_NONCE_LEN, MIN_NONCE_LEN,
+    registration_challenge_bytes, rotate_key_challenge_bytes, MAX_CLOCK_SKEW_SECS, MAX_NONCE_LEN,
+    MIN_NONCE_LEN,
 };
 
-use crate::{db::agents as db, error::ApiError, AppState};
+use crate::{
+    db::{agent_keys as keys_db, agents as db},
+    error::ApiError,
+    AppState,
+};
 
 const PUBLIC_KEY_LEN: usize = 32;
 const SIGNATURE_LEN: usize = 64;
@@ -44,6 +49,7 @@ pub fn router() -> Router<AppState> {
     // `POST /v1/inbox` (see routes::inbox) to avoid wildcard ambiguity.
     Router::new()
         .route("/register", post(register))
+        .route("/rotate-key", post(rotate_key))
         .route("/*agent_id", get(get_agent))
 }
 
@@ -96,8 +102,8 @@ async fn register(
     let signature = decode_hex_exact(&req.signature_hex, SIGNATURE_LEN, "signature_hex")?;
 
     // 2. Freshness. Overflow-safe even on adversarial timestamps.
-    let now = OffsetDateTime::now_utc().unix_timestamp();
-    if !aex_core::wire::is_within_clock_skew(now, req.issued_at) {
+    let now_unix = state.clock.now_unix();
+    if !aex_core::wire::is_within_clock_skew(now_unix, req.issued_at) {
         return Err(ApiError::BadRequest(format!(
             "issued_at is outside allowed skew (±{}s)",
             MAX_CLOCK_SKEW_SECS
@@ -196,6 +202,173 @@ async fn get_agent(
         name: row.name,
         created_at: row.created_at,
     }))
+}
+
+// ---------- POST /rotate-key ----------
+
+#[derive(Debug, Deserialize)]
+pub struct RotateKeyRequest {
+    /// Canonical agent_id whose key is rotating.
+    pub agent_id: String,
+    /// Hex-encoded NEW Ed25519 public key (32 bytes → 64 hex chars).
+    pub new_public_key_hex: String,
+    /// Hex, 32–128 chars, client-generated.
+    pub nonce: String,
+    /// Unix seconds at which the client built the challenge.
+    pub issued_at: i64,
+    /// Signature (hex, 128 chars) over the canonical
+    /// `rotate_key_challenge_bytes` made with the CURRENT (outgoing) key.
+    pub signature_hex: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RotateKeyResponse {
+    pub agent_id: String,
+    pub new_public_key_hex: String,
+    /// Unix seconds at which the new key became the current key.
+    pub valid_from: i64,
+    /// Unix seconds at which the previous key stops verifying. Clients
+    /// should treat any signature older than this from the old key as
+    /// still valid; signatures produced after this must use the new key.
+    pub previous_key_valid_until: i64,
+}
+
+async fn rotate_key(
+    State(state): State<AppState>,
+    Json(req): Json<RotateKeyRequest>,
+) -> Result<(StatusCode, Json<RotateKeyResponse>), ApiError> {
+    // 1. Shape validation.
+    let agent = aex_core::AgentId::new(&req.agent_id)?;
+
+    if req.nonce.len() < MIN_NONCE_LEN || req.nonce.len() > MAX_NONCE_LEN {
+        return Err(ApiError::BadRequest(format!(
+            "nonce length must be {}..={} hex chars",
+            MIN_NONCE_LEN, MAX_NONCE_LEN
+        )));
+    }
+    if !req.nonce.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ApiError::BadRequest("nonce must be hex".into()));
+    }
+
+    let new_public_key = decode_hex_exact(
+        &req.new_public_key_hex,
+        PUBLIC_KEY_LEN,
+        "new_public_key_hex",
+    )?;
+    let signature = decode_hex_exact(&req.signature_hex, SIGNATURE_LEN, "signature_hex")?;
+
+    // 2. Freshness. Clock injected so tests can cross the grace boundary.
+    let now_unix = state.clock.now_unix();
+    if !aex_core::wire::is_within_clock_skew(now_unix, req.issued_at) {
+        return Err(ApiError::BadRequest(format!(
+            "issued_at is outside allowed skew (±{}s)",
+            MAX_CLOCK_SKEW_SECS
+        )));
+    }
+
+    // 3. Resolve the CURRENT key for the agent. Rotation MUST be
+    //    authorised by the current key, not a key still inside its
+    //    grace window — grace is for receivers, not senders.
+    let current = keys_db::current_key(&state.db, agent.as_str())
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("agent {} not found", agent)))?;
+
+    // 4. Reject trivial rotations: the "new" key must differ from the
+    //    current one. Otherwise a buggy client could churn the
+    //    rotation history with duplicate rows.
+    if current.public_key_hex == req.new_public_key_hex {
+        return Err(ApiError::BadRequest(
+            "new_public_key_hex must differ from the current key".into(),
+        ));
+    }
+
+    // 5. Cryptographic verification against the current key.
+    let challenge = rotate_key_challenge_bytes(
+        agent.as_str(),
+        &current.public_key_hex,
+        &req.new_public_key_hex,
+        &req.nonce,
+        req.issued_at,
+    )
+    .map_err(|e| ApiError::BadRequest(format!("cannot build challenge: {}", e)))?;
+
+    let vk_bytes: [u8; PUBLIC_KEY_LEN] =
+        current.public_key.as_slice().try_into().map_err(|_| {
+            ApiError::internal(std::io::Error::other("bad stored public_key length"))
+        })?;
+    let verifying_key = VerifyingKey::from_bytes(&vk_bytes)
+        .map_err(|e| ApiError::internal(std::io::Error::other(e)))?;
+
+    let sig_bytes: [u8; SIGNATURE_LEN] = signature
+        .as_slice()
+        .try_into()
+        .expect("length already validated");
+    let dalek_sig = DalekSignature::from_bytes(&sig_bytes);
+
+    verifying_key
+        .verify(&challenge, &dalek_sig)
+        .map_err(|_| ApiError::Unauthorized("signature does not match challenge".into()))?;
+
+    // 6. Validate the new key parses as a real Ed25519 VerifyingKey
+    //    BEFORE persisting. Saves us from ending up with a "current"
+    //    key that no future call can ever verify against.
+    let new_vk_bytes: [u8; PUBLIC_KEY_LEN] = new_public_key
+        .as_slice()
+        .try_into()
+        .expect("length already validated");
+    VerifyingKey::from_bytes(&new_vk_bytes)
+        .map_err(|e| ApiError::BadRequest(format!("invalid new public key: {}", e)))?;
+
+    // 7. Nonce single-use (replay protection). AFTER signature check
+    //    so unauthenticated noise can't fill the table.
+    let fresh = keys_db::consume_rotate_nonce(&state.db, &req.nonce, agent.as_str()).await?;
+    if !fresh {
+        return Err(ApiError::Conflict("nonce already used".into()));
+    }
+
+    // 8. Persist atomically. Pass the current public_key_hex we just
+    //    verified against so the UPDATE fails cleanly if a concurrent
+    //    rotate-key call has already moved the active key off it.
+    let now = state.clock.now();
+    let row = match keys_db::insert_rotation(
+        &state.db,
+        agent.as_str(),
+        &current.public_key_hex,
+        &req.new_public_key_hex,
+        &new_public_key,
+        now,
+    )
+    .await
+    {
+        Ok(row) => row,
+        Err(sqlx::Error::RowNotFound) => {
+            // Concurrent rotation beat us to the active row.
+            return Err(ApiError::Conflict(
+                "agent key rotated concurrently; retry with the new current key".into(),
+            ));
+        }
+        Err(err) => {
+            if let Some(field) = keys_db::unique_violation_field(&err) {
+                return Err(ApiError::Conflict(format!(
+                    "rotation conflict ({}): another rotation to this key already exists",
+                    field
+                )));
+            }
+            return Err(err.into());
+        }
+    };
+
+    let previous_key_valid_until = now.unix_timestamp() + keys_db::ROTATION_GRACE_SECS;
+
+    Ok((
+        StatusCode::OK,
+        Json(RotateKeyResponse {
+            agent_id: row.agent_id,
+            new_public_key_hex: row.public_key_hex,
+            valid_from: row.valid_from.unix_timestamp(),
+            previous_key_valid_until,
+        }),
+    ))
 }
 
 // ---------- helpers ----------

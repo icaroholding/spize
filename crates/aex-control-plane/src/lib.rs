@@ -10,12 +10,14 @@
 //! ready to serve.
 
 pub mod blob;
+pub mod clock;
 pub mod config;
 pub mod db;
 pub mod endpoint_validator;
 pub mod error;
 pub mod routes;
 pub mod signer;
+pub mod verify;
 
 use axum::http::{header, HeaderValue, Method};
 use axum::Router;
@@ -32,6 +34,7 @@ use aex_policy::PolicyEngine;
 use aex_scanner::ScanPipeline;
 
 use crate::blob::BlobStore;
+use crate::clock::{Clock, SystemClock};
 use crate::endpoint_validator::EndpointValidator;
 
 /// Application state shared across all request handlers.
@@ -44,6 +47,7 @@ pub struct AppState {
     pub blobs: Arc<dyn BlobStore>,
     pub signer: Option<Arc<signer::ControlPlaneSigner>>,
     pub endpoint_validator: EndpointValidator,
+    pub clock: Arc<dyn Clock>,
 }
 
 impl AppState {
@@ -62,6 +66,7 @@ impl AppState {
             blobs,
             signer: None,
             endpoint_validator: EndpointValidator::with_defaults(),
+            clock: Arc::new(SystemClock::new()),
         }
     }
 
@@ -73,6 +78,13 @@ impl AppState {
     /// Override the endpoint validator (tests use shorter budgets / smaller pools).
     pub fn with_endpoint_validator(mut self, validator: EndpointValidator) -> Self {
         self.endpoint_validator = validator;
+        self
+    }
+
+    /// Override the clock (tests use [`crate::clock::FrozenClock`] to step
+    /// across the rotation grace-period boundary deterministically).
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
         self
     }
 }

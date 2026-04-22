@@ -182,6 +182,61 @@ pub fn data_ticket_bytes(
     Ok(msg.into_bytes())
 }
 
+/// Canonical bytes signed by an agent's **outgoing** (current) key when
+/// requesting to rotate to a new public key. Part of the formal rotation
+/// protocol defined in ADR-0024.
+///
+/// The control plane re-derives these bytes and verifies the signature
+/// against the CURRENT stored public key for `agent_id`. On success it
+/// records the new key with `valid_from = now()` and closes the old
+/// key's `valid_to` window 24h in the future — during that grace period
+/// signatures from either key verify, so in-flight receipts signed by
+/// the old key keep working while new signatures use the new one.
+///
+/// The new key is declared but NOT required to co-sign: the current key
+/// authorises, and the agent is trusted to have proof-of-possession of
+/// the new key through the device-local generation path. This mirrors
+/// ADR-0024's "old key authorises, new key takes over after grace".
+///
+/// Format:
+/// ```text
+/// spize-rotate-key:v1
+/// agent={agent_id}
+/// old_pub={current_public_key_hex}
+/// new_pub={new_public_key_hex}
+/// nonce={nonce}
+/// ts={issued_at_unix}
+/// ```
+pub fn rotate_key_challenge_bytes(
+    agent_id: &str,
+    old_public_key_hex: &str,
+    new_public_key_hex: &str,
+    nonce: &str,
+    issued_at_unix: i64,
+) -> Result<Vec<u8>> {
+    validate_ascii_line(agent_id, "agent_id")?;
+    validate_ascii_line(old_public_key_hex, "old_public_key_hex")?;
+    validate_ascii_line(new_public_key_hex, "new_public_key_hex")?;
+    validate_nonce(nonce)?;
+
+    if old_public_key_hex == new_public_key_hex {
+        return Err(Error::Internal(
+            "old_public_key_hex and new_public_key_hex must differ".into(),
+        ));
+    }
+
+    let msg = format!(
+        "spize-rotate-key:{version}\nagent={agent}\nold_pub={old}\nnew_pub={new}\nnonce={nonce}\nts={ts}",
+        version = PROTOCOL_VERSION,
+        agent = agent_id,
+        old = old_public_key_hex,
+        new = new_public_key_hex,
+        nonce = nonce,
+        ts = issued_at_unix,
+    );
+    Ok(msg.into_bytes())
+}
+
 /// Canonical bytes signed by the **recipient** when requesting the blob or
 /// acknowledging delivery. Binds the recipient's identity to the specific
 /// transfer_id and a fresh nonce to prevent replay.
@@ -424,6 +479,80 @@ mod tests {
         .unwrap();
         let expected = "spize-data-ticket:v1\ntransfer=tx_abc123\nrecipient=spize:acme/bob:ddeeff\ndata_plane=https://data.spize.io\nexpires=1700000100\nnonce=0123456789abcdef0123456789abcdef";
         assert_eq!(bytes, expected.as_bytes());
+    }
+
+    #[test]
+    fn rotate_key_stable() {
+        let bytes = rotate_key_challenge_bytes(
+            "spize:acme/alice:aabbcc",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            "0123456789abcdef0123456789abcdef",
+            1_700_000_000,
+        )
+        .unwrap();
+        let expected = "spize-rotate-key:v1\nagent=spize:acme/alice:aabbcc\nold_pub=1111111111111111111111111111111111111111111111111111111111111111\nnew_pub=2222222222222222222222222222222222222222222222222222222222222222\nnonce=0123456789abcdef0123456789abcdef\nts=1700000000";
+        assert_eq!(bytes, expected.as_bytes());
+    }
+
+    #[test]
+    fn rotate_key_different_new_key_yields_different_bytes() {
+        let a = rotate_key_challenge_bytes(
+            "spize:acme/alice:aabbcc",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            "0123456789abcdef0123456789abcdef",
+            1_700_000_000,
+        )
+        .unwrap();
+        let b = rotate_key_challenge_bytes(
+            "spize:acme/alice:aabbcc",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "3333333333333333333333333333333333333333333333333333333333333333",
+            "0123456789abcdef0123456789abcdef",
+            1_700_000_000,
+        )
+        .unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn rotate_key_rejects_same_old_and_new() {
+        let err = rotate_key_challenge_bytes(
+            "spize:acme/alice:aabbcc",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "0123456789abcdef0123456789abcdef",
+            1_700_000_000,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::Internal(_)));
+    }
+
+    #[test]
+    fn rotate_key_rejects_newline_in_agent_id() {
+        let err = rotate_key_challenge_bytes(
+            "spize:acme/alice:\naabbcc",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            "0123456789abcdef0123456789abcdef",
+            1_700_000_000,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::Internal(_)));
+    }
+
+    #[test]
+    fn rotate_key_rejects_short_nonce() {
+        let err = rotate_key_challenge_bytes(
+            "spize:acme/alice:aabbcc",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            "deadbeef",
+            1_700_000_000,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::Internal(_)));
     }
 
     #[test]
