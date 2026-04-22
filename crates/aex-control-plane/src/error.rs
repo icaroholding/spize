@@ -216,6 +216,14 @@ pub mod runbook {
                 }
             }
             "internal_error" => Some(url("internal-error")),
+            // Stripe webhook failure modes. Each has a dedicated
+            // runbook with the fix checklist (env var set? secret
+            // match? migration applied?).
+            "stripe_disabled" => Some(url("stripe-disabled")),
+            "stripe_signature_missing" => Some(url("stripe-signature-missing")),
+            "stripe_signature_invalid" => Some(url("stripe-signature-invalid")),
+            "stripe_event_malformed" => Some(url("stripe-event-malformed")),
+            "stripe_processing_failed" => Some(url("stripe-processing-failed")),
             _ => None,
         }
     }
@@ -314,6 +322,36 @@ pub mod runbook {
                     "unauthorized.md"
                 )
             }
+            "stripe-disabled" => {
+                concat!(
+                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
+                    "stripe-disabled.md"
+                )
+            }
+            "stripe-event-malformed" => {
+                concat!(
+                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
+                    "stripe-event-malformed.md"
+                )
+            }
+            "stripe-processing-failed" => {
+                concat!(
+                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
+                    "stripe-processing-failed.md"
+                )
+            }
+            "stripe-signature-invalid" => {
+                concat!(
+                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
+                    "stripe-signature-invalid.md"
+                )
+            }
+            "stripe-signature-missing" => {
+                concat!(
+                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
+                    "stripe-signature-missing.md"
+                )
+            }
             "wrong-recipient" => {
                 concat!(
                     "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
@@ -342,6 +380,11 @@ pub mod runbook {
         "nonce-replay",
         "rotation-race",
         "signature-invalid",
+        "stripe-disabled",
+        "stripe-event-malformed",
+        "stripe-processing-failed",
+        "stripe-signature-invalid",
+        "stripe-signature-missing",
         "transfer-not-found",
         "unauthorized",
         "wrong-recipient",
@@ -442,6 +485,27 @@ mod tests {
         let url = runbook::runbook_url("internal_error", "internal server error")
             .expect("internal errors always have a runbook");
         assert!(url.ends_with("internal-error.md"), "got: {url}");
+    }
+
+    #[test]
+    fn stripe_codes_map_to_runbooks() {
+        // Every `stripe_*` code exposed by the webhook handler must
+        // hand operators a runbook URL — no silent misses.
+        for (code, expected_suffix) in [
+            ("stripe_disabled", "stripe-disabled.md"),
+            ("stripe_signature_missing", "stripe-signature-missing.md"),
+            ("stripe_signature_invalid", "stripe-signature-invalid.md"),
+            ("stripe_event_malformed", "stripe-event-malformed.md"),
+            ("stripe_processing_failed", "stripe-processing-failed.md"),
+        ] {
+            let url = runbook::runbook_url(code, "").unwrap_or_else(|| {
+                panic!("{code} must map to a runbook");
+            });
+            assert!(
+                url.ends_with(expected_suffix),
+                "{code} maps to wrong url: {url}"
+            );
+        }
     }
 
     #[test]

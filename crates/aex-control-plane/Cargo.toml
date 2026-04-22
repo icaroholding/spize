@@ -48,6 +48,10 @@ tracing-subscriber.workspace = true
 ed25519-dalek.workspace = true
 hex.workspace = true
 sha2.workspace = true
+# HMAC-SHA256 for Stripe webhook signature verification. Already a
+# transitive dep via sqlx / ring so adding it as a direct dep costs
+# nothing new.
+hmac = "0.12"
 
 # Time
 time = { workspace = true }

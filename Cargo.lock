@@ -47,6 +47,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "futures",
  "hex",
+ "hmac",
  "prometheus",
  "rand 0.8.6",
  "reqwest 0.12.28",

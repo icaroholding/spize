@@ -5,6 +5,7 @@ pub mod inbox;
 pub mod metered;
 pub mod metrics;
 pub mod transfers;
+pub mod webhooks;
 
 use axum::{middleware, Router};
 
