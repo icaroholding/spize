@@ -12,7 +12,7 @@ pub mod signature;
 pub mod types;
 pub mod wire;
 
-pub use endpoint::Endpoint;
+pub use endpoint::{Endpoint, EndpointHealth, HealthStatus};
 pub use error::{Error, Result};
 pub use identity::{IdentityProvider, TrustMetadata};
 pub use signature::{Signature, SignatureAlgorithm};

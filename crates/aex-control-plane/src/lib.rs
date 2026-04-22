@@ -15,6 +15,7 @@ pub mod config;
 pub mod db;
 pub mod endpoint_validator;
 pub mod error;
+pub mod health_monitor;
 pub mod routes;
 pub mod signer;
 pub mod verify;

@@ -163,6 +163,7 @@ impl TunnelOrchestrator {
                 url,
                 priority,
                 health_hint_unix: None,
+                health: None,
             })
             .collect()
     }
