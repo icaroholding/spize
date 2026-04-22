@@ -15,17 +15,18 @@
 //! the first hop; per-operator auth plugs in behind it.
 
 use axum::{
-    extract::{Request, State},
+    extract::{Path, Request, State},
     http::{header::AUTHORIZATION, StatusCode},
     middleware::Next,
     response::{IntoResponse, Json, Response},
-    routing::get,
+    routing::{delete, get, post},
     Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
+use time::OffsetDateTime;
 
-use crate::AppState;
+use crate::{db::api_keys as keys_db, error::ApiError, AppState};
 
 /// Minimum header length after trimming `Bearer `. Matches the
 /// config-time `MIN_ADMIN_TOKEN_LEN`, enforced separately from the
@@ -127,9 +128,142 @@ async fn whoami(State(_): State<AppState>) -> Json<WhoAmIResponse> {
     })
 }
 
+// ---------- API key CRUD ----------
+
+#[derive(Debug, Deserialize)]
+pub struct CreateApiKeyRequest {
+    /// Opaque customer identifier. Today: Stripe customer_id post-
+    /// checkout, or a UUID / email for grandfathered users. The CP
+    /// doesn't interpret the value; policy code uses it as a
+    /// foreign-key-ish handle.
+    pub customer_id: String,
+    /// Human-readable label shown in admin/dashboard UIs.
+    pub name: String,
+    /// Subscription tier. Free-text at the wire layer; the policy
+    /// engine enforces known values.
+    #[serde(default = "default_tier")]
+    pub tier: String,
+}
+
+fn default_tier() -> String {
+    "free".into()
+}
+
+/// Shape returned on GET /list and after revoke. The plaintext is
+/// NEVER present here — it's exposed only once, on the creation
+/// response, as `CreateApiKeyResponse::api_key`.
+#[derive(Debug, Serialize)]
+pub struct ApiKeyView {
+    pub id: uuid::Uuid,
+    pub key_prefix: String,
+    pub customer_id: String,
+    pub name: String,
+    pub tier: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(
+        with = "time::serde::rfc3339::option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub last_used_at: Option<OffsetDateTime>,
+    #[serde(
+        with = "time::serde::rfc3339::option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub revoked_at: Option<OffsetDateTime>,
+    pub usage_count: i64,
+}
+
+impl From<keys_db::ApiKeyRow> for ApiKeyView {
+    fn from(r: keys_db::ApiKeyRow) -> Self {
+        Self {
+            id: r.id,
+            key_prefix: r.key_prefix,
+            customer_id: r.customer_id,
+            name: r.name,
+            tier: r.tier,
+            created_at: r.created_at,
+            last_used_at: r.last_used_at,
+            revoked_at: r.revoked_at,
+            usage_count: r.usage_count,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateApiKeyResponse {
+    #[serde(flatten)]
+    pub key: ApiKeyView,
+    /// THE plaintext key. Shown exactly once — the caller MUST
+    /// persist it here (typically handed to the customer); once
+    /// dropped it cannot be retrieved from the CP.
+    pub api_key: String,
+}
+
+async fn create_api_key(
+    State(state): State<AppState>,
+    Json(req): Json<CreateApiKeyRequest>,
+) -> Result<(StatusCode, Json<CreateApiKeyResponse>), ApiError> {
+    if req.customer_id.is_empty() {
+        return Err(ApiError::BadRequest("customer_id is empty".into()));
+    }
+    if req.name.is_empty() {
+        return Err(ApiError::BadRequest("name is empty".into()));
+    }
+    if req.tier.is_empty() {
+        return Err(ApiError::BadRequest("tier is empty".into()));
+    }
+
+    let created =
+        keys_db::create_returning_plaintext(&state.db, &req.customer_id, &req.name, &req.tier)
+            .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateApiKeyResponse {
+            api_key: created.plaintext,
+            key: created.row.into(),
+        }),
+    ))
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListApiKeysResponse {
+    pub count: usize,
+    pub keys: Vec<ApiKeyView>,
+}
+
+/// Cap at 500 keys per call. Pagination is future work; alpha tier
+/// with grandfather plan + a handful of team-tier customers stays
+/// well under this.
+const LIST_LIMIT: i64 = 500;
+
+async fn list_api_keys(
+    State(state): State<AppState>,
+) -> Result<Json<ListApiKeysResponse>, ApiError> {
+    let rows = keys_db::list_all(&state.db, LIST_LIMIT).await?;
+    let keys: Vec<ApiKeyView> = rows.into_iter().map(Into::into).collect();
+    Ok(Json(ListApiKeysResponse {
+        count: keys.len(),
+        keys,
+    }))
+}
+
+async fn revoke_api_key(
+    State(state): State<AppState>,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<Json<ApiKeyView>, ApiError> {
+    match keys_db::revoke(&state.db, id).await? {
+        Some(row) => Ok(Json(row.into())),
+        None => Err(ApiError::NotFound(format!("api key {} not found", id))),
+    }
+}
+
 pub fn router() -> Router<AppState> {
     // Individual admin endpoints accumulate here over Sprint 4 (API
     // keys, usage queries, grandfather coupon issuance). All inherit
-    // the bearer-token gate applied in `build_app_with_cors`.
-    Router::new().route("/whoami", get(whoami))
+    // the bearer-token gate applied in `routes::v1_router`.
+    Router::new()
+        .route("/whoami", get(whoami))
+        .route("/api-keys", post(create_api_key).get(list_api_keys))
+        .route("/api-keys/:id", delete(revoke_api_key))
 }
