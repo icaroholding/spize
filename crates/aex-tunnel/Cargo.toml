@@ -12,6 +12,7 @@ async-trait.workspace = true
 iroh.workspace = true
 reqwest = { workspace = true }
 serde = { workspace = true }
+tempfile = "3"
 thiserror.workspace = true
 tokio = { workspace = true }
 tracing.workspace = true
