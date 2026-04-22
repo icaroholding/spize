@@ -160,7 +160,15 @@ pub mod runbook {
         let m = message.to_ascii_lowercase();
         match code {
             "unauthorized" => {
-                if m.contains("no active key for agent") {
+                // Order: put more specific keywords first. "api key
+                // required" is a superset of "api key", so the missing-
+                // header runbook wins over the invalid-key runbook when
+                // the message happens to contain both words.
+                if m.contains("api key required") {
+                    Some(url("api-key-missing"))
+                } else if m.contains("api key") {
+                    Some(url("api-key-invalid"))
+                } else if m.contains("no active key for agent") {
                     Some(url("agent-not-registered-or-revoked"))
                 } else if m.contains("concurrent") || m.contains("rotated concurrently") {
                     Some(url("rotation-race"))
@@ -216,6 +224,18 @@ pub mod runbook {
     /// corresponding file under `docs/runbooks/`.
     fn url(slug: &str) -> &'static str {
         match slug {
+            "api-key-invalid" => {
+                concat!(
+                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
+                    "api-key-invalid.md"
+                )
+            }
+            "api-key-missing" => {
+                concat!(
+                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
+                    "api-key-missing.md"
+                )
+            }
             "agent-already-exists" => {
                 concat!(
                     "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
@@ -312,6 +332,8 @@ pub mod runbook {
         "agent-already-exists",
         "agent-not-found",
         "agent-not-registered-or-revoked",
+        "api-key-invalid",
+        "api-key-missing",
         "clock-skew",
         "conflict",
         "endpoint-unreachable",
@@ -399,6 +421,20 @@ mod tests {
         )
         .expect("unreachable endpoints has a runbook");
         assert!(url.ends_with("endpoint-unreachable.md"), "got: {url}");
+    }
+
+    #[test]
+    fn api_key_required_maps_to_missing_runbook() {
+        let url = runbook::runbook_url("unauthorized", "api key required")
+            .expect("api key required has a runbook");
+        assert!(url.ends_with("api-key-missing.md"), "got: {url}");
+    }
+
+    #[test]
+    fn api_key_not_recognized_maps_to_invalid_runbook() {
+        let url = runbook::runbook_url("unauthorized", "api key not recognized")
+            .expect("api key not recognized has a runbook");
+        assert!(url.ends_with("api-key-invalid.md"), "got: {url}");
     }
 
     #[test]

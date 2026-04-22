@@ -117,6 +117,58 @@ pub async fn list_all(pool: &PgPool, limit: i64) -> Result<Vec<ApiKeyRow>, sqlx:
     .await
 }
 
+/// Look up a non-revoked row by its SHA-256 hash. This is the hot
+/// authentication path: the middleware hashes the plaintext the
+/// caller presented and queries this function on every metered
+/// request.
+///
+/// `WHERE revoked_at IS NULL` matches the partial
+/// `idx_api_keys_active` index so the lookup stays O(log active)
+/// rather than scanning revoked tombstones. Returns `None` for both
+/// "no such hash" and "matching row is revoked" — the middleware
+/// doesn't distinguish (both are 401 to the caller).
+pub async fn find_active_by_hash(
+    pool: &PgPool,
+    hash: &str,
+) -> Result<Option<ApiKeyRow>, sqlx::Error> {
+    sqlx::query_as::<_, ApiKeyRow>(
+        r#"
+        SELECT id, key_hash, key_prefix, customer_id, name, tier,
+               created_at, last_used_at, revoked_at, usage_count
+        FROM api_keys
+        WHERE key_hash = $1 AND revoked_at IS NULL
+        "#,
+    )
+    .bind(hash)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Increment `usage_count` and refresh `last_used_at` for a key that
+/// just authenticated a request. Called fire-and-forget from the
+/// middleware (spawned on the tokio runtime) so the hot path stays
+/// fast even if the UPDATE is slow or the connection pool is hot.
+///
+/// The counter is not strictly accurate under concurrent writes —
+/// Postgres serializes each UPDATE but we lose increments if the
+/// task is dropped before completion (pod restart, etc.). A ±0.1%
+/// drift is fine for soft-quota enforcement; per-call billing would
+/// need a proper metered-events table.
+pub async fn bump_usage(pool: &PgPool, id: uuid::Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE api_keys
+        SET usage_count = usage_count + 1,
+            last_used_at = now()
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Revoke a key by `id`. Returns the updated row. Idempotent — if
 /// the key is already revoked we leave `revoked_at` as it was
 /// rather than bumping the timestamp forward.
@@ -138,6 +190,7 @@ pub async fn revoke(pool: &PgPool, id: uuid::Uuid) -> Result<Option<ApiKeyRow>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::PgPool;
 
     #[test]
     fn generated_plaintext_has_expected_shape() {
@@ -161,5 +214,66 @@ mod tests {
     #[test]
     fn prefix_takes_first_12_chars() {
         assert_eq!(prefix_of("aex_live_abcd1234ef56"), "aex_live_abc");
+    }
+
+    #[sqlx::test]
+    async fn find_active_by_hash_returns_row_for_active_key(pool: PgPool) {
+        let created = create_returning_plaintext(&pool, "cust_abc", "lookup-ok", "dev")
+            .await
+            .expect("create");
+        let hash = hash_plaintext(&created.plaintext);
+
+        let found = find_active_by_hash(&pool, &hash)
+            .await
+            .expect("query")
+            .expect("row present");
+
+        assert_eq!(found.id, created.row.id);
+        assert_eq!(found.customer_id, "cust_abc");
+        assert_eq!(found.tier, "dev");
+        assert!(found.revoked_at.is_none());
+    }
+
+    #[sqlx::test]
+    async fn find_active_by_hash_skips_revoked_rows(pool: PgPool) {
+        // Proves the partial `idx_api_keys_active` filter holds: once
+        // a key is revoked, the hot auth path can't see it anymore.
+        let created = create_returning_plaintext(&pool, "cust_rev", "to-be-revoked", "free")
+            .await
+            .expect("create");
+        let hash = hash_plaintext(&created.plaintext);
+
+        revoke(&pool, created.row.id)
+            .await
+            .expect("revoke")
+            .expect("row returned");
+
+        let found = find_active_by_hash(&pool, &hash).await.expect("query");
+        assert!(
+            found.is_none(),
+            "revoked key must not be returned by find_active_by_hash"
+        );
+    }
+
+    #[sqlx::test]
+    async fn bump_usage_increments_counter_and_sets_last_used(pool: PgPool) {
+        let created = create_returning_plaintext(&pool, "cust_bump", "bumper", "dev")
+            .await
+            .expect("create");
+        assert_eq!(created.row.usage_count, 0);
+        assert!(created.row.last_used_at.is_none());
+
+        bump_usage(&pool, created.row.id).await.expect("bump");
+
+        let hash = hash_plaintext(&created.plaintext);
+        let after = find_active_by_hash(&pool, &hash)
+            .await
+            .expect("query")
+            .expect("row");
+        assert_eq!(after.usage_count, 1);
+        assert!(
+            after.last_used_at.is_some(),
+            "last_used_at must be populated after bump_usage"
+        );
     }
 }
