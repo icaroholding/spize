@@ -69,6 +69,17 @@ enum ProbeVerdict {
     Failed,
 }
 
+/// RFC 6585 Network Authentication Required — a captive portal that
+/// speaks HTTP properly returns this status code on any origin the
+/// client probes. Treating it as an immediate Captive signal lets us
+/// classify compliant corporate networks in one probe instead of
+/// waiting for body-content heuristics or redirect inference.
+///
+/// Not all portals do this (many still just redirect to an http://
+/// login page), so 511 handling is additive to the existing
+/// redirect/body-content checks rather than replacing them.
+const HTTP_511_NETWORK_AUTH_REQUIRED: u16 = 511;
+
 /// Maximum time a single probe will wait for a response. The three probes
 /// run in parallel, so total wall-clock is bounded by this value (plus any
 /// TLS handshake overhead, which is negligible for plain HTTP probes).
@@ -142,6 +153,9 @@ async fn probe_apple(client: &reqwest::Client, url: &str) -> ProbeVerdict {
 }
 
 async fn classify_apple_response(resp: reqwest::Response) -> ProbeVerdict {
+    if resp.status().as_u16() == HTTP_511_NETWORK_AUTH_REQUIRED {
+        return ProbeVerdict::Captive;
+    }
     if resp.status().is_redirection() {
         return ProbeVerdict::Captive;
     }
@@ -159,7 +173,10 @@ async fn probe_google(client: &reqwest::Client, url: &str) -> ProbeVerdict {
     match client.get(url).timeout(PROBE_TIMEOUT).send().await {
         Ok(resp) => {
             let status = resp.status();
-            if status.is_redirection() {
+            // RFC 6585 511 and any 3xx are both Captive signals —
+            // collapse into one branch so clippy's if_same_then_else
+            // stays quiet.
+            if status.as_u16() == HTTP_511_NETWORK_AUTH_REQUIRED || status.is_redirection() {
                 ProbeVerdict::Captive
             } else if status.as_u16() == 204 {
                 ProbeVerdict::Ok
@@ -174,6 +191,9 @@ async fn probe_google(client: &reqwest::Client, url: &str) -> ProbeVerdict {
 async fn probe_ms(client: &reqwest::Client, url: &str) -> ProbeVerdict {
     match client.get(url).timeout(PROBE_TIMEOUT).send().await {
         Ok(resp) => {
+            if resp.status().as_u16() == HTTP_511_NETWORK_AUTH_REQUIRED {
+                return ProbeVerdict::Captive;
+            }
             if resp.status().is_redirection() {
                 return ProbeVerdict::Captive;
             }
@@ -304,6 +324,15 @@ mod tests {
         StatusCode::INTERNAL_SERVER_ERROR
     }
 
+    /// RFC 6585 Network Authentication Required — what a
+    /// well-behaved captive portal emits on any probe URL.
+    async fn http_511() -> impl IntoResponse {
+        (
+            StatusCode::from_u16(HTTP_511_NETWORK_AUTH_REQUIRED).unwrap(),
+            "please authenticate",
+        )
+    }
+
     async fn google_204() -> impl IntoResponse {
         StatusCode::NO_CONTENT
     }
@@ -337,11 +366,14 @@ mod tests {
             .route("/apple_captive_body", get(apple_captive_body))
             .route("/apple_redirect", get(apple_redirect))
             .route("/apple_500", get(apple_server_error))
+            .route("/apple_511", get(http_511))
             .route("/google_204", get(google_204))
             .route("/google_200", get(google_200))
             .route("/google_redirect", get(google_redirect))
+            .route("/google_511", get(http_511))
             .route("/ms_ok", get(ms_ok))
             .route("/ms_wrong", get(ms_wrong_body))
+            .route("/ms_511", get(http_511))
             .with_state(routes);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -477,6 +509,82 @@ mod tests {
         )
         .await;
         assert_eq!(r, NetworkState::Limited);
+    }
+
+    #[tokio::test]
+    async fn captive_when_apple_returns_511() {
+        let (addr, _tx) = spawn_mock(MockRoutes {
+            apple_body: Arc::new("Success".into()),
+            ms_body: Arc::new("Microsoft NCSI".into()),
+        })
+        .await;
+        let client = test_client();
+        let r = detect_with_urls(
+            &client,
+            &format!("http://{addr}/apple_511"),
+            &format!("http://{addr}/google_204"),
+            &format!("http://{addr}/ms_ok"),
+        )
+        .await;
+        assert_eq!(
+            r,
+            NetworkState::CaptivePortal,
+            "RFC 6585 511 on Apple probe must classify as captive"
+        );
+    }
+
+    #[tokio::test]
+    async fn captive_when_google_returns_511() {
+        let (addr, _tx) = spawn_mock(MockRoutes {
+            apple_body: Arc::new("Success".into()),
+            ms_body: Arc::new("Microsoft NCSI".into()),
+        })
+        .await;
+        let client = test_client();
+        let r = detect_with_urls(
+            &client,
+            &format!("http://{addr}/apple_ok"),
+            &format!("http://{addr}/google_511"),
+            &format!("http://{addr}/ms_ok"),
+        )
+        .await;
+        assert_eq!(r, NetworkState::CaptivePortal);
+    }
+
+    #[tokio::test]
+    async fn captive_when_ms_returns_511() {
+        let (addr, _tx) = spawn_mock(MockRoutes {
+            apple_body: Arc::new("Success".into()),
+            ms_body: Arc::new("Microsoft NCSI".into()),
+        })
+        .await;
+        let client = test_client();
+        let r = detect_with_urls(
+            &client,
+            &format!("http://{addr}/apple_ok"),
+            &format!("http://{addr}/google_204"),
+            &format!("http://{addr}/ms_511"),
+        )
+        .await;
+        assert_eq!(r, NetworkState::CaptivePortal);
+    }
+
+    #[tokio::test]
+    async fn captive_when_all_three_return_511() {
+        let (addr, _tx) = spawn_mock(MockRoutes {
+            apple_body: Arc::new("unused".into()),
+            ms_body: Arc::new("unused".into()),
+        })
+        .await;
+        let client = test_client();
+        let r = detect_with_urls(
+            &client,
+            &format!("http://{addr}/apple_511"),
+            &format!("http://{addr}/google_511"),
+            &format!("http://{addr}/ms_511"),
+        )
+        .await;
+        assert_eq!(r, NetworkState::CaptivePortal);
     }
 
     #[tokio::test]

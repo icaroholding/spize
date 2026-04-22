@@ -29,6 +29,14 @@ MS_EXPECTED_BODY = "Microsoft NCSI"
 
 PROBE_TIMEOUT = 5.0
 
+#: RFC 6585 Network Authentication Required. A well-behaved captive
+#: portal emits this status on any probe URL, so seeing it on any of
+#: the three probes is an immediate Captive signal — we don't wait
+#: for body-content heuristics. Additive to the existing redirect /
+#: body-mismatch checks; portals that only redirect still trip the
+#: older paths.
+HTTP_511_NETWORK_AUTH_REQUIRED = 511
+
 
 class NetworkState(str, enum.Enum):
     """High-level network reachability state.
@@ -97,6 +105,8 @@ def _probe_apple(client: httpx.Client, url: str) -> _ProbeVerdict:
         r = client.get(url, timeout=PROBE_TIMEOUT)
     except httpx.HTTPError:
         return _ProbeVerdict.FAILED
+    if r.status_code == HTTP_511_NETWORK_AUTH_REQUIRED:
+        return _ProbeVerdict.CAPTIVE
     if r.is_redirect:
         return _ProbeVerdict.CAPTIVE
     if not r.is_success:
@@ -113,6 +123,8 @@ def _probe_google(client: httpx.Client, url: str) -> _ProbeVerdict:
         r = client.get(url, timeout=PROBE_TIMEOUT)
     except httpx.HTTPError:
         return _ProbeVerdict.FAILED
+    if r.status_code == HTTP_511_NETWORK_AUTH_REQUIRED:
+        return _ProbeVerdict.CAPTIVE
     if r.is_redirect:
         return _ProbeVerdict.CAPTIVE
     if r.status_code == 204:
@@ -125,6 +137,8 @@ def _probe_ms(client: httpx.Client, url: str) -> _ProbeVerdict:
         r = client.get(url, timeout=PROBE_TIMEOUT)
     except httpx.HTTPError:
         return _ProbeVerdict.FAILED
+    if r.status_code == HTTP_511_NETWORK_AUTH_REQUIRED:
+        return _ProbeVerdict.CAPTIVE
     if r.is_redirect:
         return _ProbeVerdict.CAPTIVE
     if not r.is_success:

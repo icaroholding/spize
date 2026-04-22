@@ -19,6 +19,15 @@ const MS_EXPECTED_BODY = "Microsoft NCSI";
 const PROBE_TIMEOUT_MS = 5000;
 
 /**
+ * RFC 6585 Network Authentication Required. A well-behaved captive
+ * portal returns this status on any probe URL, so any probe that
+ * sees it is an immediate Captive signal (we skip the body-content
+ * heuristics). Additive to the existing redirect + body-mismatch
+ * checks so portals that only redirect still classify correctly.
+ */
+const HTTP_511_NETWORK_AUTH_REQUIRED = 511;
+
+/**
  * Network reachability state.
  *
  * Serialised via {@link networkStateToStdoutValue} into the
@@ -79,6 +88,7 @@ async function probeApple(
 ): Promise<ProbeVerdict> {
   const resp = await safeFetch(fetchImpl, url, timeoutMs, "manual");
   if (!resp) return "failed";
+  if (resp.status === HTTP_511_NETWORK_AUTH_REQUIRED) return "captive";
   if (resp.status >= 300 && resp.status < 400) return "captive";
   if (!resp.ok) return "unexpected";
   const body = await resp.text().catch(() => null);
@@ -93,6 +103,7 @@ async function probeGoogle(
 ): Promise<ProbeVerdict> {
   const resp = await safeFetch(fetchImpl, url, timeoutMs, "manual");
   if (!resp) return "failed";
+  if (resp.status === HTTP_511_NETWORK_AUTH_REQUIRED) return "captive";
   if (resp.status >= 300 && resp.status < 400) return "captive";
   if (resp.status === 204) return "ok";
   return "unexpected";
@@ -105,6 +116,7 @@ async function probeMs(
 ): Promise<ProbeVerdict> {
   const resp = await safeFetch(fetchImpl, url, timeoutMs, "manual");
   if (!resp) return "failed";
+  if (resp.status === HTTP_511_NETWORK_AUTH_REQUIRED) return "captive";
   if (resp.status >= 300 && resp.status < 400) return "captive";
   if (!resp.ok) return "unexpected";
   const body = await resp.text().catch(() => null);

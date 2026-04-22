@@ -104,4 +104,39 @@ describe("detectNetworkState", () => {
     });
     expect(await detectNetworkState({ fetch })).toBe("unknown");
   });
+
+  // RFC 6585 Network Authentication Required — a well-behaved
+  // captive portal speaks HTTP properly.
+  it("captive when apple returns 511", async () => {
+    const fetch = mockFetch((url) => {
+      if (url === APPLE_URL)
+        return new Response("please authenticate", { status: 511 });
+      if (url === GOOGLE_URL) return new Response(null, { status: 204 });
+      return new Response("Microsoft NCSI");
+    });
+    expect(await detectNetworkState({ fetch })).toBe("captive_portal");
+  });
+
+  it("captive when google returns 511", async () => {
+    const fetch = mockFetch((url) => {
+      if (url === APPLE_URL) return new Response("Success");
+      if (url === GOOGLE_URL) return new Response(null, { status: 511 });
+      return new Response("Microsoft NCSI");
+    });
+    expect(await detectNetworkState({ fetch })).toBe("captive_portal");
+  });
+
+  it("captive when ms returns 511", async () => {
+    const fetch = mockFetch((url) => {
+      if (url === APPLE_URL) return new Response("Success");
+      if (url === GOOGLE_URL) return new Response(null, { status: 204 });
+      return new Response(null, { status: 511 });
+    });
+    expect(await detectNetworkState({ fetch })).toBe("captive_portal");
+  });
+
+  it("captive when all three return 511", async () => {
+    const fetch = mockFetch(() => new Response(null, { status: 511 }));
+    expect(await detectNetworkState({ fetch })).toBe("captive_portal");
+  });
 });
