@@ -60,7 +60,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "control-plane signing key ready"
     );
 
-    let state = AppState::new(db.clone(), scanner, policy, audit, blobs).with_signer(signer);
+    let mut state = AppState::new(db.clone(), scanner, policy, audit, blobs).with_signer(signer);
+    if let Some(token) = cfg.admin_token.clone() {
+        tracing::info!(
+            "admin endpoints enabled; presenting Bearer {}... opens /v1/admin/*",
+            &token[..token.len().min(6)]
+        );
+        state = state.with_admin_token(token);
+    } else {
+        tracing::warn!(
+            "AEX_ADMIN_TOKEN is not set; /v1/admin/* endpoints will return 503. \
+             Generate with `openssl rand -hex 16` and restart."
+        );
+    }
     let metrics_for_monitor = state.metrics.clone();
     let app = build_app_with_cors(state, &cfg.cors_allowed_origins);
 

@@ -69,6 +69,11 @@ futures.workspace = true
 # axum router, not push to an external collector.
 prometheus = { version = "0.14", default-features = false }
 
+# Constant-time equality for admin-token compare. Already a
+# transitive dep via ed25519-dalek + subtle-family crates, so
+# pulling it in directly costs nothing new.
+subtle = "2"
+
 [dev-dependencies]
 rand.workspace = true
 tower = { workspace = true, features = ["util"] }
