@@ -17,11 +17,12 @@
 //! local HTTP server. Per ADR-0019, bind failures bubble up as
 //! `TunnelError::Other` so the orchestrator can degrade gracefully.
 //!
-//! ADR-0011 says the Iroh `EndpointId` must eventually be derived from
-//! the same Ed25519 keypair as the `spize:*` identity. That wiring
-//! lands alongside key rotation (PR E1); for now [`IrohTunnel`] accepts
-//! an optional [`SecretKey`] via [`IrohTunnel::with_secret_key`] so
-//! tests can pin the NodeId.
+//! Per ADR-0011 the Iroh `EndpointId` is derived from the same Ed25519
+//! keypair that backs the `spize:*` identity. The canonical wiring is
+//! [`IrohTunnel::with_secret_key_bytes`]: pass the 32 raw bytes surfaced
+//! by `aex_identity::SpizeNativeProvider::secret_key_bytes()` and the
+//! resulting Iroh public key is, by construction, the same 32 bytes the
+//! `spize:org/name:fingerprint` is derived from.
 
 use std::time::Duration;
 
@@ -92,11 +93,31 @@ impl IrohTunnel {
 
     /// Pin the Ed25519 identity used as the Iroh `EndpointId`. Without
     /// this, each `start()` generates a fresh random identity.
-    /// ADR-0011 will eventually derive this from the same keypair that
-    /// backs the `spize:*` identity.
+    ///
+    /// Callers that own a Spize identity should prefer
+    /// [`IrohTunnel::with_secret_key_bytes`] — it skips the explicit
+    /// [`SecretKey`] construction and makes the ADR-0011 binding
+    /// (`spize:*` keypair == Iroh NodeID) visible in the call site.
     pub fn with_secret_key(mut self, secret_key: SecretKey) -> Self {
         self.secret_key = Some(secret_key);
         self
+    }
+
+    /// Per ADR-0011: pin the Iroh `EndpointId` to the same 32-byte
+    /// Ed25519 secret that backs the caller's Spize identity. The
+    /// raw bytes are what
+    /// `aex_identity::SpizeNativeProvider::secret_key_bytes` returns;
+    /// because Iroh and the Spize canonical `AgentId` both derive their
+    /// public half from the same Ed25519 standard (RFC 8032), the
+    /// resulting Iroh public key matches
+    /// `SpizeNativeProvider::public_key_bytes` byte-for-byte. The
+    /// invariant is asserted by
+    /// `tests/adr_0011_keypair_bridge.rs`.
+    ///
+    /// Secret bytes must never leave the agent's device. Callers are
+    /// responsible for disk permissions / enclave storage / etc.
+    pub fn with_secret_key_bytes(self, secret_bytes: &[u8; 32]) -> Self {
+        self.with_secret_key(SecretKey::from_bytes(secret_bytes))
     }
 
     /// Returns the underlying Iroh endpoint while the tunnel is
