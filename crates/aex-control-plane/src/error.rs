@@ -168,6 +168,12 @@ pub mod runbook {
                     Some(url("api-key-missing"))
                 } else if m.contains("api key") {
                     Some(url("api-key-invalid"))
+                } else if m.contains("magic link") {
+                    Some(url("magic-link-invalid"))
+                } else if m.contains("session") {
+                    Some(url("session-invalid"))
+                } else if m.contains("no active customer subscription") {
+                    Some(url("no-active-subscription"))
                 } else if m.contains("no active key for agent") {
                     Some(url("agent-not-registered-or-revoked"))
                 } else if m.contains("concurrent") || m.contains("rotated concurrently") {
@@ -187,6 +193,8 @@ pub mod runbook {
                     Some(url("agent-already-exists"))
                 } else if m.contains("rotation") || m.contains("key rotated concurrently") {
                     Some(url("rotation-race"))
+                } else if m.contains("max") && m.contains("api key") {
+                    Some(url("max-keys-reached"))
                 } else {
                     Some(url("conflict"))
                 }
@@ -322,6 +330,30 @@ pub mod runbook {
                     "unauthorized.md"
                 )
             }
+            "magic-link-invalid" => {
+                concat!(
+                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
+                    "magic-link-invalid.md"
+                )
+            }
+            "max-keys-reached" => {
+                concat!(
+                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
+                    "max-keys-reached.md"
+                )
+            }
+            "no-active-subscription" => {
+                concat!(
+                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
+                    "no-active-subscription.md"
+                )
+            }
+            "session-invalid" => {
+                concat!(
+                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
+                    "session-invalid.md"
+                )
+            }
             "stripe-disabled" => {
                 concat!(
                     "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
@@ -376,9 +408,13 @@ pub mod runbook {
         "conflict",
         "endpoint-unreachable",
         "internal-error",
+        "magic-link-invalid",
         "malformed-nonce",
+        "max-keys-reached",
+        "no-active-subscription",
         "nonce-replay",
         "rotation-race",
+        "session-invalid",
         "signature-invalid",
         "stripe-disabled",
         "stripe-event-malformed",

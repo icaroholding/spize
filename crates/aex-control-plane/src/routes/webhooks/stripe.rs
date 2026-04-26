@@ -65,7 +65,7 @@ use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
 use crate::{
-    db::{api_keys as keys_db, stripe_events, subscriptions as subs_db},
+    db::{api_keys as keys_db, customers as customers_db, stripe_events, subscriptions as subs_db},
     AppState,
 };
 
@@ -292,6 +292,9 @@ async fn process_event(
     }
 
     let outcome = match event.event_type.as_str() {
+        "customer.created" | "customer.updated" => {
+            handle_customer_upsert(&mut tx, &event.data.object).await?
+        }
         "customer.subscription.created" | "customer.subscription.updated" => {
             handle_subscription_upsert(&mut tx, &event.data.object, price_dev, price_team).await?
         }
@@ -304,6 +307,41 @@ async fn process_event(
     stripe_events::mark_processed(&mut tx, &event.id).await?;
     tx.commit().await?;
     Ok(outcome)
+}
+
+async fn handle_customer_upsert(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    obj: &JsonValue,
+) -> Result<&'static str, sqlx::Error> {
+    let stripe_customer_id = str_field(obj, "id");
+    let email = str_field(obj, "email");
+    if stripe_customer_id.is_empty() || email.is_empty() {
+        tracing::warn!(
+            stripe_customer_id,
+            email_present = !email.is_empty(),
+            "customer event missing id or email; skip"
+        );
+        return Ok("skipped_malformed");
+    }
+    match customers_db::upsert_in_tx(tx, stripe_customer_id, email).await {
+        Ok(_) => {
+            tracing::info!(stripe_customer_id, email, "upserted customer email");
+            Ok("upserted_customer")
+        }
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+            // Two distinct Stripe customer IDs claiming the same email
+            // — extremely rare, surfaces only after manual ops cleanup.
+            // Log loudly and skip rather than corrupting our `customers`
+            // row. Operator must reconcile in Stripe before we can sync.
+            tracing::error!(
+                stripe_customer_id,
+                email,
+                "two stripe customers share the same email; skipping upsert"
+            );
+            Ok("skipped_email_conflict")
+        }
+        Err(e) => Err(e),
+    }
 }
 
 async fn handle_subscription_upsert(

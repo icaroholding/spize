@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod agents;
+pub mod customer;
 pub mod health;
 pub mod inbox;
 pub mod metered;
@@ -24,14 +25,20 @@ pub fn v1_router(state: AppState) -> Router<AppState> {
     // quota-enforced endpoints land here and automatically inherit
     // the auth middleware without further wiring.
     let metered = metered::router().route_layer(middleware::from_fn_with_state(
-        state,
+        state.clone(),
         metered::require_api_key,
     ));
+
+    // Customer dashboard subtree. Internal split between public
+    // (magic-link request/verify) and authenticated (whoami,
+    // logout, api-keys CRUD) is owned by `customer::router`.
+    let customer = customer::router(state);
 
     Router::new()
         .nest("/agents", agents::router())
         .nest("/transfers", transfers::router())
         .nest("/admin", admin)
         .nest("/metered", metered)
+        .nest("/customer", customer)
         .merge(inbox::router())
 }

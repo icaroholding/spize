@@ -73,7 +73,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
              Generate with `openssl rand -hex 16` and restart."
         );
     }
-    state = state.with_stripe(cfg.stripe.clone());
+    state = state
+        .with_stripe(cfg.stripe.clone())
+        .with_customer_auth(cfg.customer_auth.clone())
+        .with_email(cfg.email.clone());
     let metrics_for_monitor = state.metrics.clone();
     let app = build_app_with_cors(state, &cfg.cors_allowed_origins);
 

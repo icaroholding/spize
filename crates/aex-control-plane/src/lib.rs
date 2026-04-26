@@ -13,11 +13,13 @@ pub mod blob;
 pub mod clock;
 pub mod config;
 pub mod db;
+pub mod email;
 pub mod endpoint_validator;
 pub mod error;
 pub mod health_monitor;
 pub mod metrics;
 pub mod routes;
+pub mod session;
 pub mod signer;
 pub mod verify;
 
@@ -37,7 +39,7 @@ use aex_scanner::ScanPipeline;
 
 use crate::blob::BlobStore;
 use crate::clock::{Clock, SystemClock};
-use crate::config::StripeConfig;
+use crate::config::{CustomerAuthConfig, EmailConfig, StripeConfig};
 use crate::endpoint_validator::EndpointValidator;
 use crate::metrics::Metrics;
 
@@ -62,6 +64,12 @@ pub struct AppState {
     /// with 503 instead of silently 404'ing — same philosophy as
     /// `admin_token`.
     pub stripe: StripeConfig,
+    /// Customer dashboard / magic-link auth config (Sprint 4 PR 7).
+    pub customer_auth: CustomerAuthConfig,
+    /// Resend transactional-email config — magic-link delivery.
+    /// Optional: when missing the magic-link request returns the
+    /// token in the response body (dev-only convenience).
+    pub email: EmailConfig,
 }
 
 impl AppState {
@@ -84,6 +92,8 @@ impl AppState {
             metrics: Metrics::new(),
             admin_token: None,
             stripe: StripeConfig::default(),
+            customer_auth: CustomerAuthConfig::default(),
+            email: EmailConfig::default(),
         }
     }
 
@@ -102,6 +112,18 @@ impl AppState {
     /// from `Config::stripe`.
     pub fn with_stripe(mut self, stripe: StripeConfig) -> Self {
         self.stripe = stripe;
+        self
+    }
+
+    /// Install customer-auth config (JWT secret + frontend URL).
+    pub fn with_customer_auth(mut self, customer_auth: CustomerAuthConfig) -> Self {
+        self.customer_auth = customer_auth;
+        self
+    }
+
+    /// Install email config (Resend API key + From address).
+    pub fn with_email(mut self, email: EmailConfig) -> Self {
+        self.email = email;
         self
     }
 

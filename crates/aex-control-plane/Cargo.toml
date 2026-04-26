@@ -29,6 +29,10 @@ async-trait.workspace = true
 
 # HTTP
 axum.workspace = true
+# axum-extra::extract::cookie::CookieJar for the customer dashboard
+# session cookie. The `cookie` feature pulls in the parser; we set
+# the cookie attributes manually (Domain, SameSite, Secure, HttpOnly).
+axum-extra = { version = "0.9", features = ["cookie"] }
 tower.workspace = true
 tower-http = { workspace = true, features = ["trace", "limit", "timeout", "cors"] }
 
@@ -52,15 +56,27 @@ sha2.workspace = true
 # transitive dep via sqlx / ring so adding it as a direct dep costs
 # nothing new.
 hmac = "0.12"
+# JWT (HS256) for the customer dashboard session cookie. We could
+# roll our own with the existing hmac+sha2 deps but jsonwebtoken
+# handles claims serialization, leeway, and standard JWT errors —
+# the discipline cost of a small crate is worth the consistency.
+jsonwebtoken = "9"
+# URL parsing for the cookie-domain check on the customer-auth
+# config. We need exact host matching (not `starts_with`) to keep
+# `https://spize.io.evil.com` from being treated as a `spize.io`
+# subdomain.
+url = { workspace = true }
 
 # Time
 time = { workspace = true }
 uuid = { workspace = true }
 
 # HTTP client — used to validate the reachability of a sender's
-# tunnel_url in the M2 `send_via_tunnel` flow before issuing tickets.
-# The AEX DoH resolver + TLS config are supplied by `aex-net`.
-reqwest = { workspace = true }
+# tunnel_url in the M2 `send_via_tunnel` flow before issuing tickets,
+# and to POST to Resend's REST API for magic-link emails. `json`
+# feature gives us `.json(&body)` on RequestBuilder for tagged
+# transactional sends.
+reqwest = { workspace = true, features = ["json"] }
 
 # Futures combinators — `join_all` for parallel endpoint probing in the
 # Sprint 2 endpoint validator.

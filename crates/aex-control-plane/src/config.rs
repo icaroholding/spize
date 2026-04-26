@@ -49,6 +49,50 @@ pub struct Config {
     /// endpoint returns 503 with a pointer at the runbook — same
     /// philosophy as `admin_token`: fail loud on misconfiguration.
     pub stripe: StripeConfig,
+    /// Customer dashboard / magic-link config (Sprint 4 PR 7).
+    /// When any field is `None` the customer-auth endpoints return
+    /// 503 — fail loud on misconfiguration.
+    pub customer_auth: CustomerAuthConfig,
+    /// Resend transactional email config. Required for the magic-
+    /// link delivery; if `None` the magic-link endpoint will return
+    /// the token in the response body for development workflows.
+    pub email: EmailConfig,
+}
+
+/// Settings for the customer dashboard surface — JWT signing
+/// secret + frontend base URL the magic-link in email points at.
+#[derive(Debug, Clone, Default)]
+pub struct CustomerAuthConfig {
+    /// HS256 signing secret for session JWTs. Generated via
+    /// `openssl rand -hex 32`. When `None`, every customer-auth
+    /// endpoint returns 503.
+    pub session_secret: Option<String>,
+    /// Frontend origin the magic-link URL points at. The link the
+    /// customer clicks is built as `{frontend_base_url}/auth/callback?token=…`,
+    /// so the frontend's auth-callback page reads `token` from the
+    /// query string and POSTs it to `/v1/customer/auth/magic-link/verify`.
+    /// In dev: `http://localhost:3000`. In prod: `https://spize.io`.
+    pub frontend_base_url: Option<String>,
+}
+
+impl CustomerAuthConfig {
+    pub fn is_ready(&self) -> bool {
+        self.session_secret.is_some() && self.frontend_base_url.is_some()
+    }
+}
+
+/// Resend transactional-email integration. Optional: when missing,
+/// magic-link request returns the token to the caller as a dev-mode
+/// convenience instead of mailing it.
+#[derive(Debug, Clone, Default)]
+pub struct EmailConfig {
+    /// Resend API key (`re_…`). Used as `Authorization: Bearer …`
+    /// against `https://api.resend.com/emails`.
+    pub resend_api_key: Option<String>,
+    /// `From` header on every transactional email. Defaults to
+    /// `Spize <noreply@spize.io>`. Override via `MAIL_FROM` only if
+    /// the verified domain on Resend changes.
+    pub mail_from: String,
 }
 
 /// Stripe integration settings. Grouped so it's obvious at call
@@ -162,6 +206,52 @@ impl Config {
             );
         }
 
+        const MIN_SESSION_SECRET_LEN: usize = 32;
+        let session_secret = match env::var("AEX_SESSION_SECRET") {
+            Ok(v) if v.len() >= MIN_SESSION_SECRET_LEN => Some(v),
+            Ok(v) if v.is_empty() => None,
+            Ok(v) => {
+                return Err(ConfigError::Invalid {
+                    name: "AEX_SESSION_SECRET",
+                    msg: format!(
+                        "must be at least {} chars; got {} — generate with \
+                         `openssl rand -hex 32`",
+                        MIN_SESSION_SECRET_LEN,
+                        v.len()
+                    ),
+                });
+            }
+            Err(_) => None,
+        };
+        let customer_auth = CustomerAuthConfig {
+            session_secret,
+            frontend_base_url: env::var("AEX_FRONTEND_BASE_URL")
+                .ok()
+                .filter(|v| !v.is_empty()),
+        };
+        if !customer_auth.is_ready() {
+            tracing::warn!(
+                session_secret = customer_auth.session_secret.is_some(),
+                frontend_base_url = customer_auth.frontend_base_url.is_some(),
+                "Customer auth not fully configured; /v1/customer/* will return 503. \
+                 Set AEX_SESSION_SECRET + AEX_FRONTEND_BASE_URL."
+            );
+        }
+
+        let email = EmailConfig {
+            resend_api_key: env::var("RESEND_API_KEY").ok().filter(|v| !v.is_empty()),
+            mail_from: env::var("MAIL_FROM")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "Spize <noreply@spize.io>".to_string()),
+        };
+        if email.resend_api_key.is_none() {
+            tracing::warn!(
+                "RESEND_API_KEY not set; magic-link email delivery falls back to \
+                 returning the token in the response body for dev workflows."
+            );
+        }
+
         Ok(Self {
             database_url,
             bind_addr,
@@ -172,6 +262,8 @@ impl Config {
             cors_allowed_origins,
             admin_token,
             stripe,
+            customer_auth,
+            email,
         })
     }
 }
