@@ -155,6 +155,19 @@ const MAX_UPLOAD_BODY_BYTES: usize = 500 * 1024 * 1024;
 /// Build a [`CorsLayer`] from a comma-separated list of allowed origins.
 /// An empty list produces a no-op layer (same-origin only). `*` is allowed
 /// but flagged in the log so operators see they're running wide-open.
+///
+/// On the **allowlist** branch (the production path), the layer also
+/// emits `Access-Control-Allow-Credentials: true`. The customer
+/// dashboard at `https://spize.io` calls `https://api.spize.io` with
+/// `fetch(..., { credentials: "include" })` to send the
+/// `aex_session` cookie cross-subdomain — without that header the
+/// browser drops the cookie and the dashboard can't authenticate.
+///
+/// We deliberately do NOT enable credentials on the wildcard (`*`)
+/// branch: the CORS spec forbids combining `Allow-Credentials: true`
+/// with `Allow-Origin: *`, and browsers reject such responses.
+/// Wildcard remains a developer-only escape hatch — production
+/// must use an explicit allowlist.
 fn build_cors_layer(allowed: &[String]) -> CorsLayer {
     if allowed.is_empty() {
         return CorsLayer::new();
@@ -162,7 +175,9 @@ fn build_cors_layer(allowed: &[String]) -> CorsLayer {
     if allowed.iter().any(|o| o == "*") {
         tracing::warn!(
             "CORS_ALLOWED_ORIGINS=* — any origin may call the control plane. \
-             Set CORS_ALLOWED_ORIGINS to a comma-separated allowlist in production."
+             Set CORS_ALLOWED_ORIGINS to a comma-separated allowlist in production. \
+             Note: credentials (cookies) are NOT allowed in this mode — the browser \
+             rejects `Allow-Credentials: true` with `Allow-Origin: *`."
         );
         return CorsLayer::new()
             .allow_origin(AllowOrigin::any())
@@ -177,6 +192,9 @@ fn build_cors_layer(allowed: &[String]) -> CorsLayer {
         .allow_origin(origins)
         .allow_methods([Method::GET, Method::POST])
         .allow_headers([header::CONTENT_TYPE])
+        // The dashboard (spize.io → api.spize.io) needs the cookie
+        // cross-subdomain. See module-level comment above.
+        .allow_credentials(true)
 }
 
 pub fn build_app(state: AppState) -> Router {
@@ -197,4 +215,80 @@ pub fn build_app_with_cors(state: AppState, cors_origins: &[String]) -> Router {
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::new(Duration::from_secs(60)))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod cors_tests {
+    use super::build_cors_layer;
+    use axum::http::{header, HeaderValue, Method, Request, StatusCode};
+    use axum::{routing::post, Router};
+    use tower::ServiceExt;
+
+    /// CORS preflight against an allowlisted origin must echo
+    /// `Access-Control-Allow-Credentials: true`. The dashboard's
+    /// cross-subdomain `fetch(..., {credentials: "include"})` call
+    /// breaks without this header — the browser silently drops the
+    /// session cookie.
+    #[tokio::test]
+    async fn allowlist_preflight_emits_allow_credentials() {
+        let app = Router::new()
+            .route(
+                "/v1/customer/auth/magic-link/request",
+                post(|| async { "ok" }),
+            )
+            .layer(build_cors_layer(&[
+                "https://spize.io".into(),
+                "https://www.spize.io".into(),
+            ]));
+
+        let req = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/v1/customer/auth/magic-link/request")
+            .header(header::ORIGIN, "https://spize.io")
+            .header("access-control-request-method", "POST")
+            .header("access-control-request-headers", "content-type")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let h = resp.headers();
+        assert_eq!(
+            h.get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&HeaderValue::from_static("https://spize.io"))
+        );
+        assert_eq!(
+            h.get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS),
+            Some(&HeaderValue::from_static("true")),
+            "allowlist branch must emit Access-Control-Allow-Credentials: true"
+        );
+    }
+
+    /// Wildcard (`*`) branch must NOT emit `Allow-Credentials: true`
+    /// because browsers reject the combination per CORS spec. This
+    /// test guards against an accidental future change that would
+    /// silently break the wildcard fallback.
+    #[tokio::test]
+    async fn wildcard_branch_does_not_emit_allow_credentials() {
+        let app = Router::new()
+            .route("/x", post(|| async { "ok" }))
+            .layer(build_cors_layer(&["*".into()]));
+
+        let req = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/x")
+            .header(header::ORIGIN, "https://anywhere.example")
+            .header("access-control-request-method", "POST")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            resp.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+                .is_none(),
+            "wildcard branch must NOT set Allow-Credentials (browser would reject)"
+        );
+    }
 }
