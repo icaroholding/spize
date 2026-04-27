@@ -1,9 +1,20 @@
 name: Publish npm packages
 
+# Auto-publish on tag push (v*) and manual replay via the GitHub UI /
+# `gh workflow run`. Manual replay accepts a `tag` input so a stuck
+# release can be re-published from any commit without cutting a new
+# tag — the workflow checks out THAT tag and rebuilds. Same pattern
+# as publish-pypi.yml.
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. v1.3.0-beta.2). Defaults to the workflow ref.'
+        required: false
+        default: ''
 
 # Authentication: Trusted Publishing via OIDC (no long-lived NPM_TOKEN).
 # The registry federates GitHub's workflow identity to a short-lived
@@ -34,42 +45,62 @@ jobs:
       # privilege audits).
       contents: read
     steps:
+      - name: Resolve target tag + version
+        id: tag
+        # Single source of truth for the publish version: the tag
+        # name. We later overwrite the `version` field in each
+        # package.json so the published tarball always matches the tag,
+        # even if the checked-in version drifts (the failure mode that
+        # left v1.3.0-beta.2 unpublished).
+        run: |
+          tag="${{ inputs.tag }}"
+          if [ -z "$tag" ]; then
+            tag="$GITHUB_REF_NAME"
+          fi
+          version="${tag#v}"
+          # Map `v1.3.0-beta.2` → dist-tag `beta`; `v1.4.0-rc.1` → `rc`;
+          # `v1.3.0` (no suffix) → `latest`. Prereleases MUST NOT land
+          # in the `latest` channel — `npm install @aexproto/sdk` has
+          # to keep resolving to the most recent stable. npm@11 enforces
+          # this client-side (`ETARGET` without `--tag`).
+          case "$version" in
+            *-alpha*) disttag=alpha ;;
+            *-beta*)  disttag=beta ;;
+            *-rc*)    disttag=rc ;;
+            *)        disttag=latest ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "disttag=$disttag" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag=$tag → npm version=$version, dist-tag=$disttag"
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
       - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b  # v4.0.3
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
+      - name: Sync package.json versions from tag
+        # `npm version` would also update the lockfile and create a
+        # commit — we just want a verbatim string substitution.
+        run: |
+          for pkg in packages/sdk-typescript packages/mcp-server; do
+            jq '.version = "${{ steps.tag.outputs.version }}"' "$pkg/package.json" > "$pkg/package.json.tmp"
+            mv "$pkg/package.json.tmp" "$pkg/package.json"
+            echo "$pkg/package.json:"
+            jq '.version' "$pkg/package.json"
+          done
       - name: Install workspaces
         run: npm install
       - name: Build all packages
         run: npm run build
-      - name: Derive npm dist-tag from git tag
-        id: disttag
-        # Map `v1.3.0-beta.1` → `beta`; `v1.2.0-alpha.3` → `alpha`;
-        # `v1.4.0-rc.2` → `rc`; `v1.3.0` → `latest`.
-        # Prereleases MUST NOT land in the `latest` channel — `npm
-        # install @aexproto/sdk` has to keep resolving to the most
-        # recent stable, not to whatever beta just shipped. Since
-        # `npm@11` this is enforced client-side: publishing a
-        # prerelease without an explicit `--tag` fails with
-        # `ETARGET` / `must specify a tag`.
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          case "$version" in
-            *-alpha*) tag=alpha ;;
-            *-beta*)  tag=beta ;;
-            *-rc*)    tag=rc ;;
-            *)        tag=latest ;;
-          esac
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "Resolved dist-tag: $tag (from $GITHUB_REF_NAME)"
       - name: Publish @aexproto/sdk
         run: >
           npm publish
           --workspace=packages/sdk-typescript
           --access public
           --provenance
-          --tag ${{ steps.disttag.outputs.tag }}
+          --tag ${{ steps.tag.outputs.disttag }}
       - name: Wait for npm index
         run: sleep 30
       - name: Publish @aexproto/mcp-server
@@ -78,4 +109,4 @@ jobs:
           --workspace=packages/mcp-server
           --access public
           --provenance
-          --tag ${{ steps.disttag.outputs.tag }}
+          --tag ${{ steps.tag.outputs.disttag }}
