@@ -45,97 +45,6 @@ pub struct Config {
     /// endpoints return 503 with a clear message — we don't want
     /// silent 404s on a forgotten deploy secret.
     pub admin_token: Option<String>,
-    /// Stripe webhook config. When any field is `None` the webhook
-    /// endpoint returns 503 with a pointer at the runbook — same
-    /// philosophy as `admin_token`: fail loud on misconfiguration.
-    pub stripe: StripeConfig,
-    /// Customer dashboard / magic-link config (Sprint 4 PR 7).
-    /// When any field is `None` the customer-auth endpoints return
-    /// 503 — fail loud on misconfiguration.
-    pub customer_auth: CustomerAuthConfig,
-    /// Resend transactional email config. Required for the magic-
-    /// link delivery; if `None` the magic-link endpoint will return
-    /// the token in the response body for development workflows.
-    pub email: EmailConfig,
-}
-
-/// Settings for the customer dashboard surface — JWT signing
-/// secret + frontend base URL the magic-link in email points at.
-#[derive(Debug, Clone, Default)]
-pub struct CustomerAuthConfig {
-    /// HS256 signing secret for session JWTs. Generated via
-    /// `openssl rand -hex 32`. When `None`, every customer-auth
-    /// endpoint returns 503.
-    pub session_secret: Option<String>,
-    /// Frontend origin the magic-link URL points at. The link the
-    /// customer clicks is built as `{frontend_base_url}/auth/callback?token=…`,
-    /// so the frontend's auth-callback page reads `token` from the
-    /// query string and POSTs it to `/v1/customer/auth/magic-link/verify`.
-    /// In dev: `http://localhost:3000`. In prod: `https://spize.io`.
-    pub frontend_base_url: Option<String>,
-}
-
-impl CustomerAuthConfig {
-    pub fn is_ready(&self) -> bool {
-        self.session_secret.is_some() && self.frontend_base_url.is_some()
-    }
-}
-
-/// Resend transactional-email integration. Optional: when missing,
-/// magic-link request returns the token to the caller as a dev-mode
-/// convenience instead of mailing it.
-#[derive(Debug, Clone, Default)]
-pub struct EmailConfig {
-    /// Resend API key (`re_…`). Used as `Authorization: Bearer …`
-    /// against `https://api.resend.com/emails`.
-    pub resend_api_key: Option<String>,
-    /// `From` header on every transactional email. Defaults to
-    /// `Spize <noreply@spize.io>`. Override via `MAIL_FROM` only if
-    /// the verified domain on Resend changes.
-    pub mail_from: String,
-}
-
-/// Stripe integration settings. Grouped so it's obvious at call
-/// sites ("the Stripe surface") and so tests can build a coherent
-/// fake without touching unrelated env vars.
-#[derive(Debug, Clone, Default)]
-pub struct StripeConfig {
-    /// Shared webhook signing secret from the Stripe dashboard
-    /// (`whsec_…`). Required to verify that an incoming POST is
-    /// really from Stripe. When `None`, the webhook handler returns
-    /// 503.
-    pub webhook_secret: Option<String>,
-    /// Stripe `price.id` that maps to the `dev` tier (e.g.
-    /// `$29/month` at Sprint 4 launch). When a
-    /// `customer.subscription.*` event references this price, the
-    /// resulting `subscriptions` row is tagged `tier = "dev"` and
-    /// the customer dashboard will hand out `dev`-tier API keys.
-    pub price_dev: Option<String>,
-    /// Same as above for the `team` tier (e.g. `$99/month`).
-    pub price_team: Option<String>,
-    /// Stripe API secret key (`sk_test_…` or `sk_live_…`). Required
-    /// for any **outgoing** call to Stripe — Checkout Session
-    /// creation, Customer Portal session creation, etc. Webhook
-    /// signature verification does NOT need it (uses `webhook_secret`
-    /// instead). When `None`, the checkout endpoint returns 503.
-    pub secret_key: Option<String>,
-}
-
-impl StripeConfig {
-    /// True iff the webhook is fully configured. Handlers short-
-    /// circuit with a 503 when this is false, which happens in dev
-    /// or on a forgotten-secret deploy.
-    pub fn is_ready(&self) -> bool {
-        self.webhook_secret.is_some() && self.price_dev.is_some() && self.price_team.is_some()
-    }
-
-    /// True iff the **outgoing** Stripe API surface is configured —
-    /// i.e. `secret_key` is set. The webhook can be ready without
-    /// `secret_key` (it only needs the webhook signing secret), so
-    /// these are tracked separately.
-    pub fn checkout_ready(&self) -> bool {
-        self.secret_key.is_some() && self.price_dev.is_some() && self.price_team.is_some()
-    }
 }
 
 impl Config {
@@ -203,70 +112,6 @@ impl Config {
             Err(_) => None,
         };
 
-        let stripe = StripeConfig {
-            webhook_secret: env::var("STRIPE_WEBHOOK_SECRET")
-                .ok()
-                .filter(|v| !v.is_empty()),
-            price_dev: env::var("STRIPE_PRICE_DEV").ok().filter(|v| !v.is_empty()),
-            price_team: env::var("STRIPE_PRICE_TEAM").ok().filter(|v| !v.is_empty()),
-            secret_key: env::var("STRIPE_SECRET_KEY").ok().filter(|v| !v.is_empty()),
-        };
-        if !stripe.is_ready() {
-            tracing::warn!(
-                webhook_secret = stripe.webhook_secret.is_some(),
-                price_dev = stripe.price_dev.is_some(),
-                price_team = stripe.price_team.is_some(),
-                "Stripe webhook not fully configured; /webhooks/stripe will return 503. \
-                 Set STRIPE_WEBHOOK_SECRET + STRIPE_PRICE_DEV + STRIPE_PRICE_TEAM."
-            );
-        }
-
-        const MIN_SESSION_SECRET_LEN: usize = 32;
-        let session_secret = match env::var("AEX_SESSION_SECRET") {
-            Ok(v) if v.len() >= MIN_SESSION_SECRET_LEN => Some(v),
-            Ok(v) if v.is_empty() => None,
-            Ok(v) => {
-                return Err(ConfigError::Invalid {
-                    name: "AEX_SESSION_SECRET",
-                    msg: format!(
-                        "must be at least {} chars; got {} — generate with \
-                         `openssl rand -hex 32`",
-                        MIN_SESSION_SECRET_LEN,
-                        v.len()
-                    ),
-                });
-            }
-            Err(_) => None,
-        };
-        let customer_auth = CustomerAuthConfig {
-            session_secret,
-            frontend_base_url: env::var("AEX_FRONTEND_BASE_URL")
-                .ok()
-                .filter(|v| !v.is_empty()),
-        };
-        if !customer_auth.is_ready() {
-            tracing::warn!(
-                session_secret = customer_auth.session_secret.is_some(),
-                frontend_base_url = customer_auth.frontend_base_url.is_some(),
-                "Customer auth not fully configured; /v1/customer/* will return 503. \
-                 Set AEX_SESSION_SECRET + AEX_FRONTEND_BASE_URL."
-            );
-        }
-
-        let email = EmailConfig {
-            resend_api_key: env::var("RESEND_API_KEY").ok().filter(|v| !v.is_empty()),
-            mail_from: env::var("MAIL_FROM")
-                .ok()
-                .filter(|v| !v.is_empty())
-                .unwrap_or_else(|| "Spize <noreply@spize.io>".to_string()),
-        };
-        if email.resend_api_key.is_none() {
-            tracing::warn!(
-                "RESEND_API_KEY not set; magic-link email delivery falls back to \
-                 returning the token in the response body for dev workflows."
-            );
-        }
-
         Ok(Self {
             database_url,
             bind_addr,
@@ -276,9 +121,6 @@ impl Config {
             max_transfer_bytes,
             cors_allowed_origins,
             admin_token,
-            stripe,
-            customer_auth,
-            email,
         })
     }
 }

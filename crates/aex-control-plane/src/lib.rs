@@ -8,20 +8,22 @@
 //! [`build_app`] is the axum entry point: it takes a fully-migrated
 //! [`sqlx::PgPool`] and a composed [`AppState`] and returns a [`Router`]
 //! ready to serve.
+//!
+//! Downstream consumers (e.g. the private `spize-cp` overlay) compose
+//! a wider router by calling [`public_routes`] for the protocol surface,
+//! merging their own commercial routes on top, and applying the shared
+//! middleware stack via [`build_cors_layer`] + [`MAX_UPLOAD_BODY_BYTES`].
 
 pub mod blob;
 pub mod clock;
 pub mod config;
 pub mod db;
-pub mod email;
 pub mod endpoint_validator;
 pub mod error;
 pub mod health_monitor;
 pub mod metrics;
 pub mod routes;
-pub mod session;
 pub mod signer;
-pub mod stripe;
 pub mod verify;
 
 use axum::http::{header, HeaderValue, Method};
@@ -40,7 +42,6 @@ use aex_scanner::ScanPipeline;
 
 use crate::blob::BlobStore;
 use crate::clock::{Clock, SystemClock};
-use crate::config::{CustomerAuthConfig, EmailConfig, StripeConfig};
 use crate::endpoint_validator::EndpointValidator;
 use crate::metrics::Metrics;
 
@@ -60,17 +61,6 @@ pub struct AppState {
     /// the admin middleware returns 503 on every admin request — see
     /// `routes::admin::require_admin_token`.
     pub admin_token: Option<String>,
-    /// Stripe webhook config (signing secret + price→tier map).
-    /// When the secret is `None` the webhook handler short-circuits
-    /// with 503 instead of silently 404'ing — same philosophy as
-    /// `admin_token`.
-    pub stripe: StripeConfig,
-    /// Customer dashboard / magic-link auth config (Sprint 4 PR 7).
-    pub customer_auth: CustomerAuthConfig,
-    /// Resend transactional-email config — magic-link delivery.
-    /// Optional: when missing the magic-link request returns the
-    /// token in the response body (dev-only convenience).
-    pub email: EmailConfig,
 }
 
 impl AppState {
@@ -92,9 +82,6 @@ impl AppState {
             clock: Arc::new(SystemClock::new()),
             metrics: Metrics::new(),
             admin_token: None,
-            stripe: StripeConfig::default(),
-            customer_auth: CustomerAuthConfig::default(),
-            email: EmailConfig::default(),
         }
     }
 
@@ -104,27 +91,6 @@ impl AppState {
     /// `Config::admin_token`.
     pub fn with_admin_token(mut self, token: impl Into<String>) -> Self {
         self.admin_token = Some(token.into());
-        self
-    }
-
-    /// Install Stripe webhook config (secret + price→tier map).
-    /// Tests override this to exercise the webhook against a known
-    /// secret + fake price IDs; production wiring plumbs the value
-    /// from `Config::stripe`.
-    pub fn with_stripe(mut self, stripe: StripeConfig) -> Self {
-        self.stripe = stripe;
-        self
-    }
-
-    /// Install customer-auth config (JWT secret + frontend URL).
-    pub fn with_customer_auth(mut self, customer_auth: CustomerAuthConfig) -> Self {
-        self.customer_auth = customer_auth;
-        self
-    }
-
-    /// Install email config (Resend API key + From address).
-    pub fn with_email(mut self, email: EmailConfig) -> Self {
-        self.email = email;
         self
     }
 
@@ -150,7 +116,11 @@ impl AppState {
 /// Body limit for upload requests. Tier policies enforce per-tier caps
 /// but we apply a hard ceiling at the transport layer too so a flooded
 /// pipe can't OOM the server before business rules run.
-const MAX_UPLOAD_BODY_BYTES: usize = 500 * 1024 * 1024;
+///
+/// Public so downstream consumers (overlay control planes that wrap
+/// this crate) can apply the same hard ceiling on their merged
+/// router.
+pub const MAX_UPLOAD_BODY_BYTES: usize = 500 * 1024 * 1024;
 
 /// Build a [`CorsLayer`] from a comma-separated list of allowed origins.
 /// An empty list produces a no-op layer (same-origin only). `*` is allowed
@@ -168,7 +138,7 @@ const MAX_UPLOAD_BODY_BYTES: usize = 500 * 1024 * 1024;
 /// with `Allow-Origin: *`, and browsers reject such responses.
 /// Wildcard remains a developer-only escape hatch — production
 /// must use an explicit allowlist.
-fn build_cors_layer(allowed: &[String]) -> CorsLayer {
+pub fn build_cors_layer(allowed: &[String]) -> CorsLayer {
     if allowed.is_empty() {
         return CorsLayer::new();
     }
@@ -197,24 +167,36 @@ fn build_cors_layer(allowed: &[String]) -> CorsLayer {
         .allow_credentials(true)
 }
 
+/// Build the public protocol routes (health, metrics, /v1) with the
+/// supplied state baked in. No transport-layer middleware applied —
+/// callers add layers on the merged router so a single CORS / body-
+/// limit configuration covers both public and any commercial
+/// overlay routes.
+pub fn public_routes(state: AppState) -> Router {
+    Router::new()
+        .merge(routes::health::router())
+        .merge(routes::metrics::router())
+        .nest("/v1", routes::v1_router(state.clone()))
+        .with_state(state)
+}
+
+/// Run the control plane's embedded migrations against `pool`.
+/// Public so the private `spize-cp` overlay can boot the full
+/// public schema before applying its own commercial migrations.
+pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
+    sqlx::migrate!("./migrations").run(pool).await
+}
+
 pub fn build_app(state: AppState) -> Router {
     build_app_with_cors(state, &[])
 }
 
 pub fn build_app_with_cors(state: AppState, cors_origins: &[String]) -> Router {
-    Router::new()
-        .merge(routes::health::router())
-        .merge(routes::metrics::router())
-        .nest("/v1", routes::v1_router(state.clone()))
-        // Webhooks live outside /v1 and have no shared auth —
-        // per-provider signature verification happens inside each
-        // handler.
-        .nest("/webhooks", routes::webhooks::router())
+    public_routes(state)
         .layer(RequestBodyLimitLayer::new(MAX_UPLOAD_BODY_BYTES))
         .layer(build_cors_layer(cors_origins))
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::new(Duration::from_secs(60)))
-        .with_state(state)
 }
 
 #[cfg(test)]
@@ -225,17 +207,14 @@ mod cors_tests {
     use tower::ServiceExt;
 
     /// CORS preflight against an allowlisted origin must echo
-    /// `Access-Control-Allow-Credentials: true`. The dashboard's
-    /// cross-subdomain `fetch(..., {credentials: "include"})` call
-    /// breaks without this header — the browser silently drops the
-    /// session cookie.
+    /// `Access-Control-Allow-Credentials: true`. Downstream
+    /// dashboards rely on cross-subdomain `fetch(..., {credentials:
+    /// "include"})` calls — silently dropping the header here would
+    /// break their session cookie path.
     #[tokio::test]
     async fn allowlist_preflight_emits_allow_credentials() {
         let app = Router::new()
-            .route(
-                "/v1/customer/auth/magic-link/request",
-                post(|| async { "ok" }),
-            )
+            .route("/v1/admin/whoami", post(|| async { "ok" }))
             .layer(build_cors_layer(&[
                 "https://spize.io".into(),
                 "https://www.spize.io".into(),
@@ -243,7 +222,7 @@ mod cors_tests {
 
         let req = Request::builder()
             .method(Method::OPTIONS)
-            .uri("/v1/customer/auth/magic-link/request")
+            .uri("/v1/admin/whoami")
             .header(header::ORIGIN, "https://spize.io")
             .header("access-control-request-method", "POST")
             .header("access-control-request-headers", "content-type")

@@ -15,11 +15,11 @@ name = "aex-data-plane"
 path = "src/main.rs"
 
 [dependencies]
-aex-core = { path = "../aex-core", version = "=1.3.0-beta.1" }
-aex-scanner = { path = "../aex-scanner", version = "=1.3.0-beta.1" }
-aex-audit = { path = "../aex-audit", version = "=1.3.0-beta.1" }
-aex-tunnel = { path = "../aex-tunnel", version = "=1.3.0-beta.1" }
-aex-net = { path = "../aex-net", version = "=1.3.0-beta.1" }
+aex-core = { path = "../aex-core", version = "=1.3.0-beta.2" }
+aex-scanner = { path = "../aex-scanner", version = "=1.3.0-beta.2" }
+aex-audit = { path = "../aex-audit", version = "=1.3.0-beta.2" }
+aex-tunnel = { path = "../aex-tunnel", version = "=1.3.0-beta.2" }
+aex-net = { path = "../aex-net", version = "=1.3.0-beta.2" }
 
 # HTTP
 axum = { workspace = true }
