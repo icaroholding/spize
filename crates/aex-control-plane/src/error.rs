@@ -160,21 +160,7 @@ pub mod runbook {
         let m = message.to_ascii_lowercase();
         match code {
             "unauthorized" => {
-                // Order: put more specific keywords first. "api key
-                // required" is a superset of "api key", so the missing-
-                // header runbook wins over the invalid-key runbook when
-                // the message happens to contain both words.
-                if m.contains("api key required") {
-                    Some(url("api-key-missing"))
-                } else if m.contains("api key") {
-                    Some(url("api-key-invalid"))
-                } else if m.contains("magic link") {
-                    Some(url("magic-link-invalid"))
-                } else if m.contains("session") {
-                    Some(url("session-invalid"))
-                } else if m.contains("no active customer subscription") {
-                    Some(url("no-active-subscription"))
-                } else if m.contains("no active key for agent") {
+                if m.contains("no active key for agent") {
                     Some(url("agent-not-registered-or-revoked"))
                 } else if m.contains("concurrent") || m.contains("rotated concurrently") {
                     Some(url("rotation-race"))
@@ -193,8 +179,6 @@ pub mod runbook {
                     Some(url("agent-already-exists"))
                 } else if m.contains("rotation") || m.contains("key rotated concurrently") {
                     Some(url("rotation-race"))
-                } else if m.contains("max") && m.contains("api key") {
-                    Some(url("max-keys-reached"))
                 } else {
                     Some(url("conflict"))
                 }
@@ -224,19 +208,6 @@ pub mod runbook {
                 }
             }
             "internal_error" => Some(url("internal-error")),
-            // Stripe webhook failure modes. Each has a dedicated
-            // runbook with the fix checklist (env var set? secret
-            // match? migration applied?).
-            "stripe_disabled" => Some(url("stripe-disabled")),
-            "stripe_signature_missing" => Some(url("stripe-signature-missing")),
-            "stripe_signature_invalid" => Some(url("stripe-signature-invalid")),
-            "stripe_event_malformed" => Some(url("stripe-event-malformed")),
-            "stripe_processing_failed" => Some(url("stripe-processing-failed")),
-            // Outbound Stripe API failures (Checkout, Customer
-            // Portal). Distinct from webhook failures because the
-            // missing config is `STRIPE_SECRET_KEY`, not
-            // `STRIPE_WEBHOOK_SECRET`.
-            "checkout_disabled" => Some(url("checkout-disabled")),
             _ => None,
         }
     }
@@ -245,18 +216,6 @@ pub mod runbook {
     /// corresponding file under `docs/runbooks/`.
     fn url(slug: &str) -> &'static str {
         match slug {
-            "api-key-invalid" => {
-                concat!(
-                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
-                    "api-key-invalid.md"
-                )
-            }
-            "api-key-missing" => {
-                concat!(
-                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
-                    "api-key-missing.md"
-                )
-            }
             "agent-already-exists" => {
                 concat!(
                     "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
@@ -335,66 +294,6 @@ pub mod runbook {
                     "unauthorized.md"
                 )
             }
-            "checkout-disabled" => {
-                concat!(
-                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
-                    "checkout-disabled.md"
-                )
-            }
-            "magic-link-invalid" => {
-                concat!(
-                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
-                    "magic-link-invalid.md"
-                )
-            }
-            "max-keys-reached" => {
-                concat!(
-                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
-                    "max-keys-reached.md"
-                )
-            }
-            "no-active-subscription" => {
-                concat!(
-                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
-                    "no-active-subscription.md"
-                )
-            }
-            "session-invalid" => {
-                concat!(
-                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
-                    "session-invalid.md"
-                )
-            }
-            "stripe-disabled" => {
-                concat!(
-                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
-                    "stripe-disabled.md"
-                )
-            }
-            "stripe-event-malformed" => {
-                concat!(
-                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
-                    "stripe-event-malformed.md"
-                )
-            }
-            "stripe-processing-failed" => {
-                concat!(
-                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
-                    "stripe-processing-failed.md"
-                )
-            }
-            "stripe-signature-invalid" => {
-                concat!(
-                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
-                    "stripe-signature-invalid.md"
-                )
-            }
-            "stripe-signature-missing" => {
-                concat!(
-                    "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
-                    "stripe-signature-missing.md"
-                )
-            }
             "wrong-recipient" => {
                 concat!(
                     "https://github.com/icaroholding/aex/blob/master/docs/runbooks/",
@@ -413,26 +312,14 @@ pub mod runbook {
         "agent-already-exists",
         "agent-not-found",
         "agent-not-registered-or-revoked",
-        "api-key-invalid",
-        "api-key-missing",
-        "checkout-disabled",
         "clock-skew",
         "conflict",
         "endpoint-unreachable",
         "internal-error",
-        "magic-link-invalid",
         "malformed-nonce",
-        "max-keys-reached",
-        "no-active-subscription",
         "nonce-replay",
         "rotation-race",
-        "session-invalid",
         "signature-invalid",
-        "stripe-disabled",
-        "stripe-event-malformed",
-        "stripe-processing-failed",
-        "stripe-signature-invalid",
-        "stripe-signature-missing",
         "transfer-not-found",
         "unauthorized",
         "wrong-recipient",
@@ -515,45 +402,10 @@ mod tests {
     }
 
     #[test]
-    fn api_key_required_maps_to_missing_runbook() {
-        let url = runbook::runbook_url("unauthorized", "api key required")
-            .expect("api key required has a runbook");
-        assert!(url.ends_with("api-key-missing.md"), "got: {url}");
-    }
-
-    #[test]
-    fn api_key_not_recognized_maps_to_invalid_runbook() {
-        let url = runbook::runbook_url("unauthorized", "api key not recognized")
-            .expect("api key not recognized has a runbook");
-        assert!(url.ends_with("api-key-invalid.md"), "got: {url}");
-    }
-
-    #[test]
     fn internal_always_maps_to_internal_runbook() {
         let url = runbook::runbook_url("internal_error", "internal server error")
             .expect("internal errors always have a runbook");
         assert!(url.ends_with("internal-error.md"), "got: {url}");
-    }
-
-    #[test]
-    fn stripe_codes_map_to_runbooks() {
-        // Every `stripe_*` code exposed by the webhook handler must
-        // hand operators a runbook URL — no silent misses.
-        for (code, expected_suffix) in [
-            ("stripe_disabled", "stripe-disabled.md"),
-            ("stripe_signature_missing", "stripe-signature-missing.md"),
-            ("stripe_signature_invalid", "stripe-signature-invalid.md"),
-            ("stripe_event_malformed", "stripe-event-malformed.md"),
-            ("stripe_processing_failed", "stripe-processing-failed.md"),
-        ] {
-            let url = runbook::runbook_url(code, "").unwrap_or_else(|| {
-                panic!("{code} must map to a runbook");
-            });
-            assert!(
-                url.ends_with(expected_suffix),
-                "{code} maps to wrong url: {url}"
-            );
-        }
     }
 
     #[test]

@@ -1,13 +1,9 @@
 pub mod admin;
 pub mod agents;
-pub mod checkout;
-pub mod customer;
 pub mod health;
 pub mod inbox;
-pub mod metered;
 pub mod metrics;
 pub mod transfers;
-pub mod webhooks;
 
 use axum::{middleware, Router};
 
@@ -22,28 +18,9 @@ pub fn v1_router(state: AppState) -> Router<AppState> {
         admin::require_admin_token,
     ));
 
-    // Metered subtree authenticates callers by API key. Future
-    // quota-enforced endpoints land here and automatically inherit
-    // the auth middleware without further wiring.
-    let metered = metered::router().route_layer(middleware::from_fn_with_state(
-        state.clone(),
-        metered::require_api_key,
-    ));
-
-    // Customer dashboard subtree. Internal split between public
-    // (magic-link request/verify) and authenticated (whoami,
-    // logout, api-keys CRUD) is owned by `customer::router`.
-    let customer = customer::router(state);
-
     Router::new()
         .nest("/agents", agents::router())
         .nest("/transfers", transfers::router())
         .nest("/admin", admin)
-        .nest("/metered", metered)
-        .nest("/customer", customer)
-        // Public checkout endpoint — no auth, anonymous browsers
-        // hit it to create a Stripe Checkout Session for the
-        // /pricing page Subscribe buttons.
-        .nest("/checkout", checkout::router())
         .merge(inbox::router())
 }

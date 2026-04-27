@@ -15,11 +15,11 @@ name = "aex-control-plane"
 path = "src/main.rs"
 
 [dependencies]
-aex-core = { path = "../aex-core", version = "=1.3.0-beta.1" }
-aex-audit = { path = "../aex-audit", version = "=1.3.0-beta.1" }
-aex-scanner = { path = "../aex-scanner", version = "=1.3.0-beta.1" }
-aex-policy = { path = "../aex-policy", version = "=1.3.0-beta.1" }
-aex-net = { path = "../aex-net", version = "=1.3.0-beta.1" }
+aex-core = { path = "../aex-core", version = "=1.3.0-beta.2" }
+aex-audit = { path = "../aex-audit", version = "=1.3.0-beta.2" }
+aex-scanner = { path = "../aex-scanner", version = "=1.3.0-beta.2" }
+aex-policy = { path = "../aex-policy", version = "=1.3.0-beta.2" }
+aex-net = { path = "../aex-net", version = "=1.3.0-beta.2" }
 
 rand.workspace = true
 
@@ -29,10 +29,6 @@ async-trait.workspace = true
 
 # HTTP
 axum.workspace = true
-# axum-extra::extract::cookie::CookieJar for the customer dashboard
-# session cookie. The `cookie` feature pulls in the parser; we set
-# the cookie attributes manually (Domain, SameSite, Secure, HttpOnly).
-axum-extra = { version = "0.9", features = ["cookie"] }
 tower.workspace = true
 tower-http = { workspace = true, features = ["trace", "limit", "timeout", "cors"] }
 
@@ -52,30 +48,13 @@ tracing-subscriber.workspace = true
 ed25519-dalek.workspace = true
 hex.workspace = true
 sha2.workspace = true
-# HMAC-SHA256 for Stripe webhook signature verification. Already a
-# transitive dep via sqlx / ring so adding it as a direct dep costs
-# nothing new.
-hmac = "0.12"
-# JWT (HS256) for the customer dashboard session cookie. We could
-# roll our own with the existing hmac+sha2 deps but jsonwebtoken
-# handles claims serialization, leeway, and standard JWT errors —
-# the discipline cost of a small crate is worth the consistency.
-jsonwebtoken = "9"
-# URL parsing for the cookie-domain check on the customer-auth
-# config. We need exact host matching (not `starts_with`) to keep
-# `https://spize.io.evil.com` from being treated as a `spize.io`
-# subdomain.
-url = { workspace = true }
 
 # Time
 time = { workspace = true }
 uuid = { workspace = true }
 
 # HTTP client — used to validate the reachability of a sender's
-# tunnel_url in the M2 `send_via_tunnel` flow before issuing tickets,
-# and to POST to Resend's REST API for magic-link emails. `json`
-# feature gives us `.json(&body)` on RequestBuilder for tagged
-# transactional sends.
+# tunnel_url in the M2 `send_via_tunnel` flow before issuing tickets.
 reqwest = { workspace = true, features = ["json"] }
 
 # Futures combinators — `join_all` for parallel endpoint probing in the
