@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "aex-a2a-bridge"
-version = "1.3.0-beta.4"
+version = "2.0.0-beta.1"
 dependencies = [
  "aex-core",
  "aex-jws",
@@ -52,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "aex-audit"
-version = "1.3.0-beta.4"
+version = "2.0.0-beta.1"
 dependencies = [
  "aex-core",
  "async-trait",
@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "aex-billing"
-version = "1.3.0-beta.4"
+version = "2.0.0-beta.1"
 dependencies = [
  "aex-policy",
  "async-trait",
@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "aex-cli"
-version = "1.3.0-beta.4"
+version = "2.0.0-beta.1"
 dependencies = [
  "aex-core",
  "aex-identity",
@@ -94,7 +94,7 @@ dependencies = [
 
 [[package]]
 name = "aex-conformance"
-version = "1.3.0-beta.4"
+version = "2.0.0-beta.1"
 dependencies = [
  "aex-core",
  "aex-identity",
@@ -110,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "aex-control-plane"
-version = "1.3.0-beta.4"
+version = "2.0.0-beta.1"
 dependencies = [
  "aex-audit",
  "aex-core",
@@ -143,7 +143,7 @@ dependencies = [
 
 [[package]]
 name = "aex-core"
-version = "1.3.0-beta.4"
+version = "2.0.0-beta.1"
 dependencies = [
  "async-trait",
  "proptest",
@@ -155,7 +155,7 @@ dependencies = [
 
 [[package]]
 name = "aex-data-plane"
-version = "1.3.0-beta.4"
+version = "2.0.0-beta.1"
 dependencies = [
  "aex-audit",
  "aex-core",
@@ -185,7 +185,7 @@ dependencies = [
 
 [[package]]
 name = "aex-identity"
-version = "1.3.0-beta.4"
+version = "2.0.0-beta.1"
 dependencies = [
  "aex-core",
  "aex-jws",
@@ -206,7 +206,7 @@ dependencies = [
 
 [[package]]
 name = "aex-jws"
-version = "1.3.0-beta.4"
+version = "2.0.0-beta.1"
 dependencies = [
  "base64",
  "ed25519-dalek 2.2.0",
@@ -221,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "aex-net"
-version = "1.3.0-beta.4"
+version = "2.0.0-beta.1"
 dependencies = [
  "axum",
  "hickory-resolver 0.24.4",
@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "aex-policy"
-version = "1.3.0-beta.4"
+version = "2.0.0-beta.1"
 dependencies = [
  "aex-core",
  "aex-net",
@@ -255,7 +255,7 @@ dependencies = [
 
 [[package]]
 name = "aex-scanner"
-version = "1.3.0-beta.4"
+version = "2.0.0-beta.1"
 dependencies = [
  "aex-core",
  "async-trait",
@@ -271,7 +271,7 @@ dependencies = [
 
 [[package]]
 name = "aex-tunnel"
-version = "1.3.0-beta.4"
+version = "2.0.0-beta.1"
 dependencies = [
  "aex-core",
  "aex-identity",

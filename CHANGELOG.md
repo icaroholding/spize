@@ -2,6 +2,118 @@
 
 All notable changes are recorded here. Versioning follows [semver](https://semver.org).
 
+## [2.0.0-beta.1] — 2026-05-20
+
+First public beta of the v2 protocol line. Wire v2 ships alongside
+wire v1, which remains accepted for the duration of the v1→v2
+grace window defined in
+[ADR-0043](docs/decisions/0043-capability-negotiation-dual-wire.md).
+The normative specification is [`docs/protocol-v2.md`](docs/protocol-v2.md).
+
+### Added
+
+- **W3C DID URI agent identifiers** ([ADR-0041](docs/decisions/0041-agent-id-w3c-did-uri.md)).
+  `AgentId` parses `did:method:method-specific-id[#fragment]` and
+  exposes the components via `AgentId::as_did_uri()`. Legacy
+  `spize:org/name:fingerprint` ids continue to parse during the
+  grace window.
+- **Wire v2 canonical bytes** ([ADR-0042](docs/decisions/0042-wire-v2-brand-neutral-prefix.md)).
+  Brand-neutral `aex-<msg>:v2` prefix for all five signed message
+  types: `aex-register`, `aex-transfer-intent`,
+  `aex-data-ticket`, `aex-rotate-key`, `aex-transfer-receipt`.
+- **Capability bit registry** ([ADR-0018](docs/decisions/0018-wire-v1-frozen-capability-bits-v2-phase-6.md)
+  + [ADR-0043](docs/decisions/0043-capability-negotiation-dual-wire.md)).
+  Stable bit positions and wire-string names for nine capabilities
+  including `wire-v2`, `jws-agent-card`, `card-etag`, `safe-http`,
+  `clock-skew-60s`, and `deferred-decision`.
+- **Tight clock skew window** ([ADR-0044](docs/decisions/0044-clock-skew-60s-rfc-7519.md))
+  — 60-second leeway in wire v2, down from 300s in v1, aligned
+  with RFC 7519 §4.1.4.
+- **`aex-jws` crate** — JWS Compact Serialization (RFC 7515) sign
+  + verify with a hardcoded algorithm whitelist (`EdDSA`,
+  `ES256K`). `alg=none`, `HS256`, missing-`alg`, and malformed
+  headers are rejected at parse time before any signature work.
+- **`aex-net::safe_http`** ([ADR-0045](docs/decisions/0045-aex-net-safe-http-ssrf.md))
+  — SSRF-resistant HTTP fetcher used by every well-known
+  resolution. Blocks loopback, RFC 1918, link-local, IPv6 ULA,
+  and multicast targets; refuses redirects; resolves DNS once
+  and connects by IP literal to close the DNS rebinding window.
+- **Identity providers**:
+  - `aex-identity::DidKeyProvider` — `did:key:` Ed25519, fully
+    self-certifying, no network resolution.
+  - `aex-identity::DidWebProvider` — `did:web:` via
+    `https://<authority>/.well-known/agent-card.json` fetched
+    through `safe_http`, verified as JWS, capabilities parsed
+    into a `CapabilitySet`.
+  - `aex-identity::EtereCitizenProvider` — promoted to
+    first-class `did:ethr:` trust-scoring layer per
+    [ADR-0040](docs/decisions/0040-etere-citizen-trust-scoring-first-class.md).
+- **`ResolverChain`** ([ADR-0046](docs/decisions/0046-card-cache-1h-etag-events.md))
+  — dispatch by IdScheme, 1-hour TTL cache with ETag
+  conditional revalidation, single-flight stampede protection,
+  cache-integrity verification on every fetch.
+- **`aex-control-plane` v2 routes** — `GET /v2/capabilities`,
+  `GET /.well-known/agent-card.json`, and `POST /v2/intents`
+  (stub at beta with `501 Not Implemented` + structured runbook
+  link; full intent verification lands in the GA follow-up).
+- **SDK wire v2 codec** — Python (`aex_sdk.wire_v2`) and
+  TypeScript (`@aexproto/sdk` `wire-v2.ts`) ship the v2 canonical
+  bytes with cross-language byte-equality asserted by parallel
+  golden-vector tests.
+- **`aex-cli` binary** — operator-side debugging (`aex-cli debug
+  resolve <handle>`) and offline handle sharing via QR codes
+  (`aex-cli qr <handle>`).
+- **`aex-conformance` binary** ([ADR-0048](docs/decisions/0048-conformance-suite-apache-2.md))
+  — Apache-2.0 open binary running 25 conformance checks against
+  any AEX deployment. Exit code 0 on pass; structured JSON report
+  via `--report-json`.
+- **`aex-a2a-bridge` crate** — translation adapter between AEX
+  transfer intents and Google A2A v1.0 task envelopes, with
+  delegation chain depth ≤ 3 enforced and per-hop signature
+  verification.
+- **MCP server `aex_*` tool aliases** — every legacy `spize_*`
+  tool gains an `aex_*` canonical name; the legacy aliases
+  remain callable with a one-shot stderr deprecation note during
+  the grace window.
+- **Deferred decisions** ([ADR-0049](docs/decisions/0049-deferred-decisions-neutral-standard.md))
+  — capability bit `deferred-decision` + two new canonical
+  signed messages (`aex-decision-request:v2`,
+  `aex-decision-response:v2`) + `PolicyDecision::Pending`
+  variant + `DecisionSink` trait with two reference
+  implementations (`InProcessDecisionSink`,
+  `WebhookDecisionSink`) + two audit chain event kinds
+  (`DeferredDecisionRequested`, `SignedDecisionReceipt`). The
+  wire bytes are decider-neutral: the protocol takes no position
+  on whether the verdict originates from a human operator, a
+  secondary AI evaluator, an external policy engine, or a
+  consensus of agents.
+
+### Changed
+
+- README rewritten as a standard-grade document positioning AEX
+  as an open protocol with vendor-neutral wire bytes, federated
+  discovery, and self-hostable infrastructure.
+- `docs/protocol-v2.md` is now the normative spec; v1 spec
+  remains valid through the grace window.
+- Wire-v1 codec preserved unchanged; `aex_core::wire` continues
+  to produce `spize-*:v1` bytes for backwards compatibility.
+
+### Deprecated
+
+- MCP `spize_*` tool names — see the `aex_*` aliases above.
+  Removal target: 6 months after v2 GA.
+- Legacy `spize:org/name:fingerprint` identifiers — keep parsing
+  during the grace window; new agents should register under
+  `did:spize:`, `did:web:`, `did:ethr:`, or `did:key:`.
+
+### Infrastructure
+
+- 25 conformance tests; ~600 tests passing across Rust workspace,
+  Python SDK, and TypeScript SDK.
+- `.githooks/pre-commit` and `.githooks/pre-push` ship in-tree to
+  catch CI failures locally before push.
+- ADRs 0040–0049 document the v2 design rationale.
+
 ## [1.3.0-beta.1] — 2026-04-22
 
 First beta release after Sprint 2. Bundles transport plurality,

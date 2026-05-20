@@ -1,6 +1,6 @@
 {
   "name": "@aexproto/mcp-server",
-  "version": "1.3.0-beta.2",
+  "version": "2.0.0-beta.1",
   "private": false,
   "description": "MCP server exposing AEX (Agent Exchange Protocol) tools (send, inbox, download, ack) to Claude Desktop / Cursor / any MCP host.",
   "license": "Apache-2.0",
@@ -27,7 +27,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
-    "@aexproto/sdk": "1.3.0-beta.1",
+    "@aexproto/sdk": "2.0.0-beta.1",
     "zod": "^3.23.0"
   },
   "devDependencies": {

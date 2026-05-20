@@ -18,10 +18,10 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-aex-core = { path = "../aex-core", version = "=1.3.0-beta.4" }
-aex-identity = { path = "../aex-identity", version = "=1.3.0-beta.4" }
-aex-jws = { path = "../aex-jws", version = "=1.3.0-beta.4" }
-aex-net = { path = "../aex-net", version = "=1.3.0-beta.4" }
+aex-core = { path = "../aex-core", version = "=2.0.0-beta.1" }
+aex-identity = { path = "../aex-identity", version = "=2.0.0-beta.1" }
+aex-jws = { path = "../aex-jws", version = "=2.0.0-beta.1" }
+aex-net = { path = "../aex-net", version = "=2.0.0-beta.1" }
 
 base64.workspace = true
 clap.workspace = true
