@@ -1,0 +1,68 @@
+name: Promote npm dist-tag
+
+# One-shot workflow to move the `latest` dist-tag and deprecate
+# old pre-v2 versions on the @aexproto npm packages. Manual trigger
+# only — there is no scenario where this should run on every push.
+#
+# Use it after a beta cycle when:
+#   - the existing `latest` dist-tag points at a version that no
+#     longer represents the project state (e.g. stuck on an alpha
+#     from before a major version cut),
+#   - you want the npm web UI to surface the current line.
+#
+# Re-running with the same inputs is idempotent: `dist-tag add` is
+# a no-op when the tag already points there, and `npm deprecate`
+# overwrites the message in place.
+on:
+  workflow_dispatch:
+    inputs:
+      sdk_version:
+        description: 'Version of @aexproto/sdk to promote to latest (e.g. 2.0.0-beta.1)'
+        required: true
+        type: string
+      mcp_version:
+        description: 'Version of @aexproto/mcp-server to promote to latest (e.g. 2.0.0-beta.1)'
+        required: true
+        type: string
+      deprecate_legacy:
+        description: 'Mark 1.x pre-v2 versions as deprecated with an upgrade pointer'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b  # v4.0.3
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+      - name: Move latest dist-tag — @aexproto/sdk
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: >
+          npm dist-tag add @aexproto/sdk@${{ inputs.sdk_version }} latest
+      - name: Move latest dist-tag — @aexproto/mcp-server
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: >
+          npm dist-tag add @aexproto/mcp-server@${{ inputs.mcp_version }} latest
+      - name: Deprecate legacy 1.x versions
+        if: ${{ inputs.deprecate_legacy }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # `npm deprecate` is a soft deprecation: the version stays
+        # installable for anyone who has it pinned but `npm install`
+        # surfaces the message. We deprecate every 1.x line, not
+        # just the previous `latest`, so the npm UI badge across
+        # the whole legacy series is consistent.
+        run: |
+          set -e
+          msg="AEX v2 is out. Install @aexproto/sdk@latest (or @beta) to get the v2 line."
+          for v in 1.2.0-alpha.1 1.3.0-beta.1 1.3.0-beta.2; do
+            echo "Deprecating @aexproto/sdk@$v"
+            npm deprecate "@aexproto/sdk@$v" "$msg" || true
+            echo "Deprecating @aexproto/mcp-server@$v"
+            npm deprecate "@aexproto/mcp-server@$v" "$msg" || true
+          done
