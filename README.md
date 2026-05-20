@@ -8,7 +8,7 @@
 
 [![CI](https://github.com/icaroholding/aex/actions/workflows/ci.yml/badge.svg)](https://github.com/icaroholding/aex/actions)
 [![crates.io](https://img.shields.io/crates/v/aex-core.svg)](https://crates.io/crates/aex-core)
-[![npm](https://img.shields.io/npm/v/@aexproto/sdk.svg)](https://www.npmjs.com/package/@aexproto/sdk)
+[![npm](https://img.shields.io/npm/v/@aexproto/sdk/beta.svg)](https://www.npmjs.com/package/@aexproto/sdk)
 [![PyPI](https://img.shields.io/pypi/v/aex-sdk.svg)](https://pypi.org/project/aex-sdk/)
 [![Spec](https://img.shields.io/badge/spec-v2.0--beta-blue)](docs/protocol-v2.md)
 [![License: Apache 2.0 + BSL 1.1](https://img.shields.io/badge/license-Apache--2.0%20%2B%20BSL--1.1-green.svg)](#license--legal)
