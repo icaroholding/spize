@@ -85,30 +85,64 @@ jobs:
             aex-cli
           )
 
+          # `set -o pipefail` is the only safe way to surface the
+          # exit status of `cargo publish` when piped through `tee`.
+          # Without it, the `if` checks tee's exit code (always 0)
+          # and every failure gets misreported as success — that is
+          # what happened on the v2.0.0-beta.1 publish where
+          # aex-tunnel silently failed verify-manifest yet was
+          # accounted as "newly published".
+          set -o pipefail
+
           for crate in "${CRATES[@]}"; do
             echo "::group::Publish $crate"
             log_file="/tmp/${crate}.publish.log"
-            if (cd "crates/$crate" && cargo publish \
-                --token "$CARGO_REGISTRY_TOKEN" \
-                --allow-dirty) 2>&1 | tee "$log_file"; then
-              published+=("$crate")
-              # Successful publish — give the crates.io index a beat
-              # to settle so the next crate can resolve this one.
-              sleep 30
-            else
-              # cargo publish exits non-zero in two cases we want to
-              # distinguish: (a) the version already exists on
-              # crates.io — benign skip; (b) anything else — real
-              # failure that must fail the workflow.
+            # Up to 3 attempts per crate: crates.io index sometimes
+            # takes longer than 30 s to surface a brand-new version
+            # to subsequent dependents. We retry only on
+            # "failed to select a version for the requirement" /
+            # "not found in registry" symptoms; real errors (manifest
+            # syntax, build failure, auth) fail immediately.
+            attempts=0
+            outcome=""
+            while [ $attempts -lt 3 ]; do
+              attempts=$((attempts + 1))
+              if (cd "crates/$crate" && cargo publish \
+                  --token "$CARGO_REGISTRY_TOKEN" \
+                  --allow-dirty) 2>&1 | tee "$log_file"; then
+                outcome="published"
+                break
+              fi
               if grep -qE "already (uploaded|exists)" "$log_file"; then
+                outcome="already"
+                break
+              fi
+              if grep -qE "failed to select a version for the requirement|not found in registry|no matching package" "$log_file"; then
+                if [ $attempts -lt 3 ]; then
+                  echo "::warning::index lag detected, retrying $crate after 60 s (attempt $attempts/3)"
+                  sleep 60
+                  continue
+                fi
+              fi
+              outcome="failed"
+              break
+            done
+
+            case "$outcome" in
+              published)
+                published+=("$crate")
+                sleep 30
+                ;;
+              already)
                 skipped_already_published+=("$crate")
                 echo "Already on crates.io; skipping."
-              else
+                ;;
+              failed)
                 failed_real+=("$crate")
                 echo "::error::publish failed for $crate (not already-published)"
-                tail -20 "$log_file"
-              fi
-            fi
+                tail -30 "$log_file"
+                ;;
+            esac
             echo "::endgroup::"
           done
 
