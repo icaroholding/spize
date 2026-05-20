@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/aex-cover.png" alt="AEX — Agent Exchange Protocol: open, federated, identity-first protocol for cryptographically verifiable file transfer between autonomous agents" width="1100">
+
 # AEX — Agent Exchange Protocol
 
 **An open, federated, identity-first protocol for cryptographically verifiable file transfer between autonomous agents.**
