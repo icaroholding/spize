@@ -1,26 +1,126 @@
 name: Publish crates
 
+# Auto-publish on tag push (v*) and manual replay via the GitHub UI /
+# `gh workflow run`. Manual replay accepts a `tag` input so a stuck
+# release can be re-published from any commit without cutting a new
+# tag — same pattern as publish-npm.yml / publish-pypi.yml.
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. v2.0.0-beta.1). Defaults to the workflow ref.'
+        required: false
+        default: ''
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve target tag
+        id: tag
+        run: |
+          tag="${{ inputs.tag }}"
+          if [ -z "$tag" ]; then
+            tag="$GITHUB_REF_NAME"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag=$tag"
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
       - uses: dtolnay/rust-toolchain@21dc36fb71dd22e3317045c0c31a3f4249868b17  # stable
         with:
           toolchain: stable
       - name: Publish in topological order
+        # Crate order is the topological sort over the internal
+        # `path = "../*"` dependency graph: each line MUST appear
+        # after every aex-* crate it depends on. Adding a new
+        # internal crate without inserting it here in the right
+        # position is the failure mode that left v1.x partially
+        # published — the loop happily skipped missing crates with
+        # `|| true` and the workflow ended green.
+        #
+        # Topological dependency notes (one entry per crate):
+        #   aex-core            — no aex-* deps
+        #   aex-net             — no aex-* deps (workspace crypto deps only)
+        #   aex-jws             — no aex-* deps (workspace crypto deps only)
+        #   aex-audit           — aex-core
+        #   aex-scanner         — aex-core
+        #   aex-identity        — aex-core, aex-jws, aex-net
+        #   aex-policy          — aex-core, aex-net, aex-scanner
+        #   aex-tunnel          — aex-identity
+        #   aex-billing         — aex-policy
+        #   aex-a2a-bridge      — aex-core, aex-jws
+        #   aex-conformance     — aex-core, aex-identity, aex-jws, aex-net
+        #   aex-data-plane      — aex-core, aex-scanner, aex-audit,
+        #                          aex-tunnel, aex-net
+        #   aex-control-plane   — aex-core, aex-audit, aex-scanner,
+        #                          aex-policy, aex-net
+        #   aex-cli             — aex-core, aex-identity
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          for crate in aex-core aex-identity aex-audit aex-scanner aex-policy aex-tunnel aex-billing aex-data-plane aex-control-plane; do
+          set -e
+          failed_real=()
+          skipped_already_published=()
+          published=()
+
+          CRATES=(
+            aex-core
+            aex-net
+            aex-jws
+            aex-audit
+            aex-scanner
+            aex-identity
+            aex-policy
+            aex-tunnel
+            aex-billing
+            aex-a2a-bridge
+            aex-conformance
+            aex-data-plane
+            aex-control-plane
+            aex-cli
+          )
+
+          for crate in "${CRATES[@]}"; do
             echo "::group::Publish $crate"
-            (cd crates/$crate && cargo publish --token "$CARGO_REGISTRY_TOKEN" --allow-dirty || true)
-            # Dependencies need to settle in crates.io index before the next one.
-            sleep 30
+            log_file="/tmp/${crate}.publish.log"
+            if (cd "crates/$crate" && cargo publish \
+                --token "$CARGO_REGISTRY_TOKEN" \
+                --allow-dirty) 2>&1 | tee "$log_file"; then
+              published+=("$crate")
+              # Successful publish — give the crates.io index a beat
+              # to settle so the next crate can resolve this one.
+              sleep 30
+            else
+              # cargo publish exits non-zero in two cases we want to
+              # distinguish: (a) the version already exists on
+              # crates.io — benign skip; (b) anything else — real
+              # failure that must fail the workflow.
+              if grep -qE "already (uploaded|exists)" "$log_file"; then
+                skipped_already_published+=("$crate")
+                echo "Already on crates.io; skipping."
+              else
+                failed_real+=("$crate")
+                echo "::error::publish failed for $crate (not already-published)"
+                tail -20 "$log_file"
+              fi
+            fi
             echo "::endgroup::"
           done
+
+          echo ""
+          echo "──────────────────────────────────────────"
+          echo "Publish summary"
+          echo "──────────────────────────────────────────"
+          echo "Newly published      (${#published[@]}): ${published[*]:-none}"
+          echo "Already on crates.io (${#skipped_already_published[@]}): ${skipped_already_published[*]:-none}"
+          echo "Real failures        (${#failed_real[@]}): ${failed_real[*]:-none}"
+
+          if [ ${#failed_real[@]} -gt 0 ]; then
+            echo "::error::${#failed_real[@]} crate(s) failed for non-benign reasons."
+            exit 1
+          fi
