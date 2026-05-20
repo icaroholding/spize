@@ -95,6 +95,20 @@ jobs:
       - name: Build all packages
         run: npm run build
       - name: Publish @aexproto/sdk
+        env:
+          # Granular access token with publish permission on
+          # @aexproto/* and "bypass 2fa" enabled. We fell back to
+          # token-based auth from pure-OIDC trusted publishing
+          # because the OIDC publish was rejected with a
+          # consistent 404 even after the per-account and
+          # per-package "Publishing access" settings were
+          # corrected. The 404 most likely indicates a stale
+          # binding between the trusted publisher and the previous
+          # repo name (`icaroholding/spize`) before this repo was
+          # renamed to `icaroholding/aex`. Retiring back to pure
+          # OIDC is a future cleanup once the trusted publisher
+          # has been recreated against the current repo.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: >
           npm publish
           --workspace=packages/sdk-typescript
@@ -104,6 +118,8 @@ jobs:
       - name: Wait for npm index
         run: sleep 30
       - name: Publish @aexproto/mcp-server
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: >
           npm publish
           --workspace=packages/mcp-server
